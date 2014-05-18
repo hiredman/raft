@@ -6,4 +6,5 @@
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.clojure/core.async "0.1.303.0-886421-alpha"]
                  [org.clojure/core.match "0.2.1"]
+                 [org.clojure/core.logic "0.8.7"]
                  [automat "0.1.0"]])

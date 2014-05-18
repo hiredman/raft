@@ -1,5 +1,5 @@
 (ns com.thelastcitadel.raft
-  (:require [clojure.core.async :refer [alt!! timeout >!]])
+  (:require [clojure.core.async :refer [alt!! timeout >!!]])
   (:import (java.util UUID)))
 
 (defprotocol Cluster
@@ -39,10 +39,11 @@
   (prepare-heartbeat [_]))
 
 (defprotocol API
-  (delete [_ key])
-  (write [_ key value])
-  (read-op [_ key])
-  (write-if [_ key value]))
+  (delete [_ serial key])
+  (write [_ serial key value])
+  (read-op [_ serial key])
+  (write-if [_ serial key value])
+  (commited? [_ serial response-callback]))
 
 ;; {:op :delete :args []}
 ;; {:op :write :args ["foo" "bar"]}
@@ -196,9 +197,16 @@
           n (apply max (take (dec (/ (count (:match-index raft-leader-state)) 2)) ns))]
       (if (and (> n (:commit-index new-raft-state))
                (= (:term new-raft-state)) (:term (get (:log new-raft-state) n)))
-        (->Leader (assoc new-raft-state
-                    :commit-index n)
-                  raft-leader-state)
+        (let [new-raft-state (assoc new-raft-state
+                               :log (into {} (for [[index op] (:log new-raft-state)]
+                                               (if (and (= :read (:op op))
+                                                        (not (contains? op :value)))
+                                                 [index (assoc op
+                                                          :value (get-in raft-state [:value (first (:args op))]))]
+                                                 [index op]))))]
+          (->Leader (assoc new-raft-state
+                      :commit-index n)
+                    raft-leader-state))
         (->Leader new-raft-state raft-leader-state))))
   (to-follower [_ term]
     (->Follower (assoc raft-state
@@ -222,46 +230,97 @@
      :entries []
      :leader-commit (:commit-index raft-state)})
   API
-  (delete [_ key]
+  (delete [_ serial key]
     (let [op {:op :delete
               :args [key]
-              :index (inc (last-log-index rift-state))}]
+              :index (inc (last-log-index raft-state))
+              :serial serial}]
       [(->Leader (-> raft-state
-                     (append-entries [op])))
-       op]))
-  (write [_ key value]
+                     (append-log [op])))
+       {:term (:term raft-state)
+        :prev-log-index (last-log-index raft-state)
+        :prev-log-term (last-log-term raft-state)
+        :entries [op]
+        :leader-commit (:commit-index raft-state)}]))
+  (write [_ serial key value]
     (let [op {:op :write
               :args [key value]
-              :index (inc (last-log-index rift-state))}]
+              :index (inc (last-log-index raft-state))
+              :serial serial}]
       [(->Leader (-> raft-state
-                     (append-entries [op])))
-       op]))
-  (read-op [_ key]
+                     (append-log [op])))
+       {:term (:term raft-state)
+        :prev-log-index (last-log-index raft-state)
+        :prev-log-term (last-log-term raft-state)
+        :entries [op]
+        :leader-commit (:commit-index raft-state)}]))
+  (read-op [_ serial key]
     (let [op {:op :read
               :args [key]
-              :index (inc (last-log-index rift-state))}]
+              :index (inc (last-log-index raft-state))
+              :serial serial}]
       [(->Leader (-> raft-state
-                     (append-entries [op])))
-       op]))
-  (write-if [_ key value]
+                     (append-log [op])))
+       {:term (:term raft-state)
+        :prev-log-index (last-log-index raft-state)
+        :prev-log-term (last-log-term raft-state)
+        :entries [op]
+        :leader-commit (:commit-index raft-state)}]))
+  (write-if [_ serial key value]
     (let [op {:op :write-if
               :args [key value]
-              :index (inc (last-log-index rift-state))}]
+              :index (inc (last-log-index raft-state))
+              :serial serial}]
       [(->Leader (-> raft-state
-                     (append-entries [op])))
-       op])))
+                     (append-log [op])))
+       {:term (:term raft-state)
+        :prev-log-index (last-log-index raft-state)
+        :prev-log-term (last-log-term raft-state)
+        :entries [op]
+        :leader-commit (:commit-index raft-state)}]))
+  (commited? [_ serial callback]
+    (let [idx (into {} (for [[_ op] (:log raft-state)]
+                         [(:serial op) op]))]
+      (cond
+       (not (contains? idx serial))
+       (callback {:status :unknown-callback})
+       (>= (:commit-index raft-state)
+           (:index (get idx serial)))
+       (callback {:status :commited :value (:value (get idx serial))})
+       :else
+       (callback {:status :not-commited-yet})))))
 
 (def heart-beat-time-out 500)
+
+
+;; TODO: send nop append entries when becomes master
 
 (defn run [node in cluster id]
   (let [to (if (leader? node)
              (* 0.75 heart-beat-time-out)
-             heart-beat-time-out)]
+             heart-beat-time-out)
+        node (maintain node)]
     (alt!!
      in ([message]
            (if (> (:term message) (:term (:raft-state node)))
              #(run (to-follower node (:term message)) in cluster id)
              (case (:type message)
+               :api-delete (let [[new-node message] (delete node (:serial message) (:key message))]
+                             (broadcast cluster message)
+                             #(run new-node in cluster id))
+               :api-write (let [[new-node message] (write node (:serial message) (:key message) (:value message))]
+                            (broadcast cluster message)
+                            #(run new-node in cluster id))
+               :api-read (let [[new-node message] (read-op node (:serial message) (:key message))]
+                           (broadcast cluster message)
+                           #(run new-node in cluster id))
+               :api-write-if (let [[new-node message] (write-if node (:serial message) (:key message) (:value message))]
+                               (broadcast cluster message)
+                               #(run new-node in cluster id))
+               :api-commited? (do
+                                (commited? node (:serial message) (fn [response]
+                                                                    (>!! (:response-channel message) response)))
+                                #(run node in cluster id))
                :request-vote (let [[new-node result] (request-vote node
                                                                    (:term message)
                                                                    (:candidate-id message)
