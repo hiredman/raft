@@ -8,9 +8,9 @@
   (list-nodes [cluster])
   (send-to [cluster node msg]))
 
-;; TODO: split read and write operations
 (defprotocol API
-  (apply-op [value operation]))
+  (apply-read [value operation])
+  (apply-write [value operation]))
 
 (defn broadcast [cluster msg]
   (doseq [node (list-nodes cluster)]
@@ -22,11 +22,13 @@
 
 (defrecord MapValue []
   API
-  (apply-op [value operation]
+  (apply-read [value operation]
+    (case (:op operation)
+      :read (get value (:key operation))))
+  (apply-write [value operation]
     (case (:op operation)
       :write (assoc value
                (:key operation) (:value operation))
-      :read value
       :write-if (if (contains? value (:key operation))
                   value
                   (assoc value
@@ -51,12 +53,17 @@
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
-          op (get (:log raft-state) new-last)
-          ;; TODO: fill in read value for reads
-          new-value (apply-op (:value raft-state) op)]
-      (recur (assoc raft-state
-               :last-applied new-last
-               :value new-value)))
+          op (get (:log raft-state) new-last)]
+      (if (= :read (:operation-type op))
+        (let [read-value (apply-read (:value raft-state) op)
+              log (assoc-in raft-state [:log new-last :value] read-value)]
+          (recur (assoc raft-state
+                   :last-applied new-last
+                   :log log)))
+        (let [new-value (apply-write (:value raft-state) op)]
+          (recur (assoc raft-state
+                   :last-applied new-last
+                   :value new-value)))))
     raft-state))
 
 (defn last-log-index [raft-state]
