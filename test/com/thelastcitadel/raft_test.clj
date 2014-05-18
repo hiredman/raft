@@ -58,21 +58,28 @@
                             (reduce
                              #(add-node %1 (:id %2) (:in %2))
                              (->ChannelCluster)))))]
-    [leaders (doall (for [{:keys [id in cluster] :as m} n]
-                      (assoc m
-                        :future (future
-                                  (try
-                                    (run in id cluster (fn [state]
-                                                         (swap! value assoc (:id state) (:value (:raft-state state)))
-                                                         (doseq [entry (:log (:raft-state state))
-                                                                 :when (:serial entry)
-                                                                 :when (>= (:commit-index (:raft-state state))
-                                                                           (:index entry))]
-                                                           (swap! commited assoc-in
-                                                                  [(:id state) (:serial entry)] entry))
-                                                         (swap! leaders assoc (:id state) (:leader-id (:raft-state state)))))
-                                    (catch Throwable e
-                                      (log/error e "whoops")))))))
+    [leaders
+     (doall (for [{:keys [id in cluster] :as m} n]
+              (assoc m
+                :future
+                (future
+                  (try
+                    (run in id cluster
+                         (fn [state]
+                           (swap! value assoc
+                                  (:id state)
+                                  (:value (:raft-state state)))
+                           (doseq [entry (:log (:raft-state state))
+                                   :when (:serial entry)
+                                   :when (>= (:commit-index (:raft-state state))
+                                             (:index entry))]
+                             (swap! commited assoc-in
+                                    [(:id state) (:serial entry)] entry))
+                           (swap! leaders assoc
+                                  (:id state)
+                                  (:leader-id (:raft-state state)))))
+                    (catch Throwable e
+                      (log/error e "whoops")))))))
      commited
      value]))
 
