@@ -361,7 +361,7 @@
         (:success? (peek in-queue)))
    (do
      (when (not= (:last-index (peek in-queue))
-                 (get-in state [:raft-leader-state :next-index (:from (peek in-queue))]))
+                 (get-in state [:raft-leader-state :match-index (:from (peek in-queue))]))
        (log/trace (:from (peek in-queue)) "has accepted up to" (:last-index (peek in-queue))))
      (-> state
          (update-in [:in-queue] pop)
@@ -413,7 +413,6 @@
    (and (= :leader node-type)
         (let [ns (sort (map second match-index))
               quorum-count (Math/ceil (/ (count match-index) 2.0))
-              _ (log/trace "quorum-count" quorum-count)
               n (apply max 0 (take quorum-count ns))]
           (and (> n commit-index)
                (= current-term (:term (get log n))))))
