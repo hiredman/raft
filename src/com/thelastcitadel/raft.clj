@@ -121,7 +121,7 @@
         (or (= node-type :candidate)
             (= node-type :follower)))
    (do
-     (log/info id "a" node-type "requests a vote for" (inc current-term))
+     (log/trace id "a" node-type "requests a vote for" (inc current-term))
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:out-queue] conj {:type :request-vote
@@ -169,7 +169,7 @@
             (= node-type :follower)
             (= node-type :leader)))
    (do
-     (log/info id "doesn't vote for" (:candidate-id (peek in-queue)))
+     (log/trace id "doesn't vote for" (:candidate-id (peek in-queue)))
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:out-queue] conj {:type :request-vote-response
@@ -187,7 +187,7 @@
         (= :request-vote-response (:type (peek in-queue)))
         (:vote? (peek in-queue)))
    (do
-     (log/info (:from (peek in-queue)) "voted for" (:id state) "in" (:current-term (:raft-state state)))
+     (log/trace (:from (peek in-queue)) "voted for" (:id state) "in" (:current-term (:raft-state state)))
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:raft-state :votes] inc)))
@@ -214,7 +214,7 @@
         (> 2 (/ (inc (count (list-nodes cluster))) votes))
         #_(= node-type :candidate))
    (do
-     (log/info (:id state) "becomes leader in term" current-term "with" votes "votes")
+     (log/trace (:id state) "becomes leader in term" current-term "with" votes "votes")
      (-> state
          (update-in [:out-queue] conj {:target :broadcast
                                        :type :append-entries
@@ -262,7 +262,7 @@
    (and (= :append-entries (:type (peek in-queue)))
         (= node-type :candidate))
    (do
-     (log/info "append-entries from" (:from (peek in-queue)))
+     (log/trace "append-entries from" (:from (peek in-queue)))
      (update-in state [:raft-state] merge {:node-type :follower
                                            :voted-for nil
                                            :votes 0}))
@@ -362,7 +362,7 @@
    (do
      (when (not= (:last-index (peek in-queue))
                  (get-in state [:raft-leader-state :next-index (:from (peek in-queue))]))
-       (log/info (:from (peek in-queue)) "has accepted up to" (:last-index (peek in-queue))))
+       (log/trace (:from (peek in-queue)) "has accepted up to" (:last-index (peek in-queue))))
      (-> state
          (update-in [:in-queue] pop)
          (assoc-in [:raft-leader-state :match-index (:from (peek in-queue))]
@@ -392,7 +392,7 @@
           (and (>= (last-log-index raft-state) min-next)
                (not (some #(some (fn [entry] (= min-next (:index entry))) (:entries %)) out-queue)))))
    (let [min-next (apply min (vals next-index))]
-     (log/info "advance laggy followers to" min-next)
+     (log/trace "advance laggy followers to" min-next)
      (-> state
          (update-in [:out-queue] conj {:target :broadcast
                                        :type :append-entries
@@ -413,12 +413,12 @@
    (and (= :leader node-type)
         (let [ns (sort (map second match-index))
               quorum-count (Math/ceil (/ (count match-index) 2.0))
-              _ (log/info "quorum-count" quorum-count)
+              _ (log/trace "quorum-count" quorum-count)
               n (apply max 0 (take quorum-count ns))]
           (and (> n commit-index)
                (= current-term (:term (get log n))))))
    (do
-     (log/info "advance-commit")
+     (log/trace "advance-commit")
      (let [ns (sort (map second match-index))
            quorum-count (Math/ceil (/ (count match-index) 2.0))
            n (apply max 0 (take quorum-count ns))]
@@ -432,7 +432,7 @@
    (and (not (empty? in-queue))
         (= :remove-node (:type (peek in-queue))))
    (do
-     (log/info "removing" (:node (peek in-queue)) "from" id "'s cluster")
+     (log/trace "removing" (:node (peek in-queue)) "from" id "'s cluster")
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:cluster] remove-node (:node (peek in-queue)))))
@@ -449,8 +449,8 @@
                (update-in [:raft-state] append-log [(assoc (peek in-queue)
                                                       :term current-term
                                                       :index (inc (last-log-index raft-state)))]))]
-     (log/info "accepting operations")
-     (log/info s)
+     (log/trace "accepting operations")
+     (log/trace s)
      s)
    {:as state
     :keys [in-queue id raft-state]
@@ -507,7 +507,7 @@
   (let [cluster (:cluster state)]
     (if (= :stop (:type message))
       (do
-        (log/info "stopping" (:id state))
+        (log/trace "stopping" (:id state))
         (-> state
             (assoc :stopped? true)
             (update-in [:out-queue] conj {:term 0
@@ -522,14 +522,14 @@
                 (pr-str new-state (seq (:in-queue new-state))))
         (when (not= (:current-term (:raft-state state))
                     (:current-term (:raft-state new-state)))
-          (log/info (:id state) "changed terms"(:current-term (:raft-state state)) "=>"
-                    (:current-term (:raft-state new-state))))
+          (log/trace (:id state) "changed terms"(:current-term (:raft-state state)) "=>"
+                     (:current-term (:raft-state new-state))))
         (when (not= (:commit-index (:raft-state state))
                     (:commit-index (:raft-state new-state)))
           (assert (> (:commit-index (:raft-state new-state))
                      (:commit-index (:raft-state state))))
-          (log/info (:id state) "changed commits from"
-                    (:commit-index (:raft-state state))
-                    "to"
-                    (:commit-index (:raft-state new-state))))
+          (log/trace (:id state) "changed commits from"
+                     (:commit-index (:raft-state state))
+                     "to"
+                     (:commit-index (:raft-state new-state))))
         new-state))))
