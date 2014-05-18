@@ -1,6 +1,5 @@
 (ns com.thelastcitadel.raft
-  (:require [clojure.core.async :refer [alt!! timeout >!! chan sliding-buffer]]
-            [clojure.tools.logging :as log]))
+  (:require [clojure.tools.logging :as log]))
 
 ;; TODO: this may not belong here, see about simplifying
 (defprotocol Cluster
