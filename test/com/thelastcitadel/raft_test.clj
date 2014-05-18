@@ -7,6 +7,31 @@
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
 
+(defn run
+  ([in id cluster]
+     (run in id cluster identity))
+  ([in id cluster callback]
+     (loop [state (raft id cluster)]
+       (let [message (alt!!
+                      in ([message] message)
+                      (timeout
+                       (if (= :leader (:node-type (:raft-state state)))
+                         300
+                         (+ 600 (rand-int 400))))
+                      ([_] {:type :timeout
+                            :term 0}))
+             new-state (run-one state message)
+             _ (callback new-state)
+             _ (doseq [msg (:out-queue new-state)]
+                 (if (= :broadcast (:target msg))
+                   (broadcast cluster msg)
+                   (send-to cluster (:target msg) msg)))
+             new-state (update-in new-state [:out-queue] empty)]
+
+         (if (:stopped? new-state)
+           new-state
+           (recur new-state))))))
+
 (defrecord ChannelCluster []
   Cluster
   (add-node [cluster node arg1]
@@ -21,6 +46,8 @@
 
 (defn f [n]
   (let [leaders (atom {})
+        commited (atom {})
+        value (atom {})
         n (for [i (range n)]
             {:id i
              :in (chan (sliding-buffer 10))})
@@ -30,16 +57,24 @@
                             (remove #(= id (:id %)))
                             (reduce
                              #(add-node %1 (:id %2) (:in %2))
-                             (->ChannelCluster)
-                             ))))]
+                             (->ChannelCluster)))))]
     [leaders (doall (for [{:keys [id in cluster] :as m} n]
                       (assoc m
                         :future (future
                                   (try
                                     (run in id cluster (fn [state]
+                                                         (swap! value assoc (:id state) (:value (:raft-state state)))
+                                                         (doseq [entry (:log (:raft-state state))
+                                                                 :when (:serial entry)
+                                                                 :when (>= (:commit-index (:raft-state state))
+                                                                           (:index entry))]
+                                                           (swap! commited assoc-in
+                                                                  [(:id state) (:serial entry)] entry))
                                                          (swap! leaders assoc (:id state) (:leader-id (:raft-state state)))))
                                     (catch Throwable e
-                                      (log/error e "whoops")))))))]))
+                                      (log/error e "whoops")))))))
+     commited
+     value]))
 
 (deftest test-election
   (let [[leaders nodes] (f 3)]
@@ -90,7 +125,7 @@
           (future-cancel (:future i)))))))
 
 (deftest test-operations
-  (let [[leaders nodes] (f 5)]
+  (let [[leaders nodes commited value] (f 5)]
     (try
       (testing "elect leader"
         (Thread/sleep (* 1000 30))
@@ -104,16 +139,14 @@
                            :op :write
                            :key "hello"
                            :value "world"
+                           :operation-type :write
                            :serial 1})))
       (Thread/sleep (* 1000 60))
-      (doseq [i nodes]
-        (>!! (:in i) {:type :stop :term 0}))
-      (doseq [i nodes
-              :let [{:as state {:keys [log commit-index value]} :raft-state} @(:future i)
-                    idx (group-by :serial (vals log))
-                    [one] (get idx 1)]]
-        (is (>= commit-index (:index one)))
-        (is (= "world" (get value "hello"))))
+      (doseq [[node commited-entries] @commited]
+        (is (contains? commited-entries 1)))
+      (is (apply = (vals @value)))
+      (doseq [[node value] @value]
+        (is (= (get value "hello") "world")))
       (finally
         (doseq [i nodes]
           (>!! (:in i) {:type :stop :term 0}))

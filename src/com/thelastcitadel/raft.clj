@@ -533,28 +533,3 @@
                     "to"
                     (:commit-index (:raft-state new-state))))
         new-state))))
-
-(defn run
-  ([in id cluster]
-     (run in id cluster identity))
-  ([in id cluster callback]
-     (loop [state (raft id cluster)]
-       (let [message (alt!!
-                      in ([message] message)
-                      (timeout
-                       (if (= :leader (:node-type (:raft-state state)))
-                         300
-                         (+ 600 (rand-int 400))))
-                      ([_] {:type :timeout
-                            :term 0}))
-             new-state (run-one state message)
-             _ (callback new-state)
-             _ (doseq [msg (:out-queue new-state)]
-                 (if (= :broadcast (:target msg))
-                   (broadcast cluster msg)
-                   (send-to cluster (:target msg) msg)))
-             new-state (update-in new-state [:out-queue] empty)]
-
-         (if (:stopped? new-state)
-           new-state
-           (recur new-state))))))
