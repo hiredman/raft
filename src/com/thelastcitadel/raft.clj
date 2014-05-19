@@ -125,14 +125,52 @@
         :when (>= commit-index index)]
     [entry callbacks]))
 
+(defn commit-index-newer-than-last-applied-and-exists-in-log?
+  [commit-index last-applied log]
+  (and (> commit-index last-applied)
+       (contains? log commit-index)))
+
+(defn message-has-later-term? [in-queue current-term]
+  (and (not (empty? in-queue))
+       (number? (:term (peek in-queue)))
+       (> (:term (peek in-queue)) current-term)))
+
+(defn candidate-or-follower-timed-out-waiting-for-message? [in-queue node-type]
+  (and (not (empty? in-queue))
+       (= :timeout (:type (peek in-queue)))
+       (or (= node-type :candidate)
+           (= node-type :follower))))
+
+(defn recv-vote-request-and-havent-voted-yet? [in-queue voted-for node-type]
+  (and (not (empty? in-queue))
+       (= :request-vote (:type (peek in-queue)))
+       (or (nil? voted-for)
+           (= voted-for (:candidate-id (peek in-queue))))
+       (or (= node-type :candidate)
+           (= node-type :follower))))
+
+(defn recv-vote-request-and-alread-voted? [in-queue node-type voted-for]
+  (and (not (empty? in-queue))
+       (= :request-vote (:type (peek in-queue)))
+       (and (not (nil? voted-for))
+            (not= voted-for (:candidate-id (peek in-queue))))
+       (or (= node-type :candidate)
+           (= node-type :follower)
+           (= node-type :leader))))
+
+(defn recv-vote-for-this-node? [in-queue]
+  (and (not (empty? in-queue))
+       (= :request-vote-response (:type (peek in-queue)))
+       (:vote? (peek in-queue))))
+
 ;;; Raft Rules
 
 (def keep-up-commited
   "if a log entry has been commited but hasn't been applied to the
   value, apply it"
   (rule
-   (and (> commit-index last-applied)
-        (contains? log commit-index))
+   (commit-index-newer-than-last-applied-and-exists-in-log?
+    commit-index last-applied log)
    (update-in state [:raft-state] advance-applied-to-commit)
    {{:keys [commit-index last-applied log]} :raft-state :as state}))
 
@@ -140,9 +178,7 @@
   "if you see a message from a term greater than your current term,
   jump on that band wagon"
   (rule
-   (and (not (empty? in-queue))
-        (number? (:term (peek in-queue)))
-        (> (:term (peek in-queue)) current-term))
+   (message-has-later-term? in-queue current-term)
    (-> state
        (update-in [:raft-state] merge {:node-type :follower
                                        :voted-for nil
@@ -155,10 +191,7 @@
   "if a candidate or follower receives a timeout message, ask for
   votes in a new term"
   (rule
-   (and (not (empty? in-queue))
-        (= :timeout (:type (peek in-queue)))
-        (or (= node-type :candidate)
-            (= node-type :follower)))
+   (candidate-or-follower-timed-out-waiting-for-message? in-queue node-type)
    (do
      (log/trace id "a" node-type "requests a vote for" (inc current-term))
      (-> state
@@ -181,12 +214,7 @@
 
 (def respond-to-vote-request-success
   (rule
-   (and (not (empty? in-queue))
-        (= :request-vote (:type (peek in-queue)))
-        (or (nil? voted-for)
-            (= voted-for (:candidate-id (peek in-queue))))
-        (or (= node-type :candidate)
-            (= node-type :follower)))
+   (recv-vote-request-and-havent-voted-yet? in-queue voted-for node-type)
    (-> state
        (update-in [:in-queue] pop)
        (update-in [:raft-state]
@@ -202,13 +230,7 @@
 
 (def respond-to-vote-request-failure
   (rule
-   (and (not (empty? in-queue))
-        (= :request-vote (:type (peek in-queue)))
-        (and (not (nil? voted-for))
-             (not= voted-for (:candidate-id (peek in-queue))))
-        (or (= node-type :candidate)
-            (= node-type :follower)
-            (= node-type :leader)))
+   (recv-vote-request-and-alread-voted? in-queue node-type voted-for)
    (do
      (log/trace id "doesn't vote for" (:candidate-id (peek in-queue)))
      (-> state
@@ -224,9 +246,7 @@
 
 (def receive-vote-success
   (rule
-   (and (not (empty? in-queue))
-        (= :request-vote-response (:type (peek in-queue)))
-        (:vote? (peek in-queue)))
+   (recv-vote-for-this-node? in-queue)
    (do
      (log/trace (:from (peek in-queue))
                 "voted for" (:id state) "in"
