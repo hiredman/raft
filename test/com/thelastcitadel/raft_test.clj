@@ -189,18 +189,17 @@
                            :value "bob"
                            :operation-type :write
                            :serial 2})
-          #_(>!! (:in node) {:type :operation
+          (>!! (:in node) {:type :operation
                            :op :read
                            :key "hello"
                            :operation-type :read
-                           :serial 2})
-          ;; (>!! (:in node) {:type :await
-          ;;                  :callback (fn [serial value]
-          ;;                              (reset! read value))
-          ;;                  :serial 2})
-          )
-        (Thread/sleep (* 60 1000))
-        (is (= @read "world")))
+                           :serial 3})
+          (>!! (:in node) {:type :await
+                           :callback (fn [serial value]
+                                       (reset! read value))
+                           :serial 3}))
+        (Thread/sleep (* 30 1000))
+        (is (= @read "bob")))
       (finally
         (doseq [i nodes]
           (>!! (:in i) {:type :stop :term 0}))

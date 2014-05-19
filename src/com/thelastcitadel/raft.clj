@@ -81,7 +81,7 @@
           op (get (:log raft-state) new-last)]
       (if (= :read (:operation-type op))
         (let [read-value (apply-read (:value raft-state) op)
-              new-state (assoc-in raft-state [:log new-last :value] read-value)]
+              new-state (assoc-in raft-state [:log (:index op) :value] read-value)]
           (recur (assoc new-state
                    :last-applied new-last)))
         (recur (assoc raft-state
@@ -101,8 +101,8 @@
        (= log-term (:term (get (:log raft-state) log-index)))))
 
 (defn append-log [raft-state entries]
-  {:pre [(every? (comp number? :index) entries)]
-   :post [(map? (:log %))]}
+  {:post [(map? (:log %))]}
+  (assert (every? (comp number? :index) entries) entries)
   (update-in raft-state [:log]
              merge (into {} (for [entry entries] [(:index entry) entry]))))
 
@@ -118,15 +118,23 @@
       :commit-index (min leader-commit (last-log-index raft-state)))
     raft-state))
 
+(defn entries-and-callbacks [waiters log commit-index]
+  (for [[serial callbacks] waiters
+        [index entry] log
+        :when (= serial (:serial entry))
+        :when (>= commit-index index)]
+    [entry callbacks]))
+
 ;;; Raft Rules
 
 (def keep-up-commited
   "if a log entry has been commited but hasn't been applied to the
   value, apply it"
   (rule
-   (> commit-index last-applied)
+   (and (> commit-index last-applied)
+        (contains? log commit-index))
    (update-in state [:raft-state] advance-applied-to-commit)
-   {{:keys [commit-index last-applied]} :raft-state :as state}))
+   {{:keys [commit-index last-applied log]} :raft-state :as state}))
 
 (def jump-to-new-term
   "if you see a message from a term greater than your current term,
@@ -459,7 +467,8 @@
    (and (= node-type :leader)
         ;; there are lagged followers
         (seq (for [[node-id next-index] next-index
-                   :when (>= (last-log-index raft-state) next-index)]
+                   :when (>= (last-log-index raft-state) next-index)
+                   :when (get log next-index)]
                true))
         (empty? out-queue))
    (let [min-next (apply min (vals next-index))]
@@ -471,7 +480,8 @@
                                      [node-id (inc next-index)])))
          (update-in [:out-queue]
                     into (for [[node-id next-index] next-index
-                               :when (>= (last-log-index raft-state) next-index)]
+                               :when (>= (last-log-index raft-state) next-index)
+                               :when (get log next-index)]
                            {:target node-id
                             :type :append-entries
                             :term current-term
@@ -523,50 +533,62 @@
         (= :leader node-type))
    (do
      (log/trace "new index" (inc (last-log-index raft-state)))
+     (assert (contains? (peek in-queue) :op) (peek in-queue))
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:raft-state]
                     append-log [(assoc (peek in-queue)
                                   :term current-term
                                   :index
-                                  (inc (last-log-index raft-state)))])))
+                                  (inc (last-log-index raft-state)))])
+         (update-in [:out-queue]
+                    into (for [[node-id next-index] next-index]
+                           {:target node-id
+                            :type :append-entries
+                            :term current-term
+                            :leader-id id
+                            :prev-log-index (last-log-index raft-state)
+                            :prev-log-term (last-log-term raft-state)
+                            :entries [(assoc (peek in-queue)
+                                        :term current-term
+                                        :index (inc (last-log-index raft-state)))]
+                            :from id
+                            :leader-commit commit-index}))))
    {:as state
     :keys [in-queue id raft-state]
+    {:keys [next-index]} :raft-leader-state
     {:keys [node-type current-term commit-index]} :raft-state}))
 
 (def add-commit-waiters
   (rule
    (and (not (empty? in-queue))
         (= :await (:type (peek in-queue))))
-   (-> state
-       (update-in [:in-queue] pop)
-       (update-in [:waiters (:serial (peek in-queue))]
-                  conj (:callback (peek in-queue))))
+   (do
+     (log/trace "add-commit-waiters")
+     (-> state
+         (update-in [:in-queue] pop)
+         (update-in [:waiters (:serial (peek in-queue))]
+                    conj (:callback (peek in-queue)))))
    {:as state
     :keys [in-queue id raft-state]
     {:keys [node-type current-term]} :raft-state}))
 
 (def notify-commit-waiters
   (rule
-   (seq (for [serial (keys waiters)
-              entry log
-              :when (= serial (:serial entry))
-              :when (>= commit-index (:index entry))]
-          entry))
-   (let [entries-and-callbacks (for [[serial callbacks] waiters
-                                     entry log
-                                     :when (= serial (:serial entry))
-                                     :when (>= commit-index (:index entry))]
-                                 [entry callbacks])
-         callbacks-to-remove (map :serial (keys entries-and-callbacks))]
-     (doseq [[entry callbacks] entries-and-callbacks
-             callback callbacks]
-       (callback (:serial entry) (:value entry)))
-     (assoc state
-       :waiters (apply dissoc waiters callbacks-to-remove)))
+   (seq (entries-and-callbacks waiters log last-applied))
+   (do
+     (log/trace "notify-commit-waiters")
+     (let [entries-and-callbacks (entries-and-callbacks waiters log commit-index)
+           callbacks-to-remove (map :serial (map first entries-and-callbacks))]
+       (doseq [[entry callbacks] entries-and-callbacks
+               callback callbacks]
+         (log/trace "callback" callback "for" (:serial entry) "with" (:value entry) entry)
+         (callback (:serial entry) (:value entry)))
+       (assoc state
+         :waiters (apply dissoc waiters callbacks-to-remove))))
    {:as state
     :keys [waiters]
-    {:keys [commit-index log]} :raft-state}))
+    {:keys [commit-index log last-applied]} :raft-state}))
 
 ;;;
 
