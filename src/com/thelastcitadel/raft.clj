@@ -629,7 +629,8 @@
                             raft-state))
                         raft-state
                         raft-rules)]
-    (if (= raft-state new-raft-state)
+    new-raft-state
+    #_(if (= raft-state new-raft-state)
       new-raft-state
       (recur new-raft-state))))
 
