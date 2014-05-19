@@ -81,7 +81,8 @@
           op (get (:log raft-state) new-last)]
       (if (= :read (:operation-type op))
         (let [read-value (apply-read (:value raft-state) op)
-              new-state (assoc-in raft-state [:log (:index op) :value] read-value)]
+              new-state (assoc-in raft-state [:log (:index op) :value]
+                                  read-value)]
           (recur (assoc new-state
                    :last-applied new-last)))
         (recur (assoc raft-state
@@ -365,7 +366,8 @@
                                  (:prev-log-term (peek in-queue))
                                  (:prev-log-index (peek in-queue))))))
    (do
-     (log/trace "rejecting append-entries with unknown prevs" (peek in-queue) (keys (:log raft-state)))
+     (log/trace "rejecting append-entries with unknown prevs" (peek in-queue)
+                (keys (:log raft-state)))
      (-> state
          (update-in [:in-queue] pop)
          (update-in [:out-queue] conj {:target (:leader-id (peek in-queue))
@@ -414,13 +416,15 @@
             (log-contains? raft-state
                            (:prev-log-term (peek in-queue))
                            (:prev-log-index (peek in-queue))))
-        (not (every? #(log-contains? raft-state (:term (peek in-queue)) (:index %))
+        (not (every? #(log-contains? raft-state (:term (peek in-queue))
+                                     (:index %))
                      (:entries (peek in-queue)))))
    (-> state
        (update-in [:in-queue] pop)
        (assoc-in [:raft-state :voted-for] nil)
        (assoc-in [:raft-state :leader-id] (:leader-id (peek in-queue)))
-       (update-in [:raft-state] clear-log-after (:prev-log-term (peek in-queue)))
+       (update-in [:raft-state] clear-log-after
+                  (:prev-log-term (peek in-queue)))
        (update-in [:raft-state] append-log (:entries (peek in-queue)))
        (update-in [:raft-state] set-commit (:leader-commit (peek in-queue)))
        (as-> state
@@ -445,7 +449,8 @@
      (log/trace "unsuccessful append entries" (seq in-queue) state)
      (-> state
          (update-in [:in-queue] pop)
-         (update-in [:raft-leader-state :next-index (:from (peek in-queue))] dec)))
+         (update-in [:raft-leader-state :next-index (:from (peek in-queue))]
+                    dec)))
    {:as state
     :keys [in-queue]
     {:keys [next-index]} :raft-leader-state
@@ -459,7 +464,8 @@
         (:success? (peek in-queue)))
    (do
      (assert (>= (:last-index (peek in-queue))
-                 (get-in state [:raft-leader-state :match-index (:from (peek in-queue))])))
+                 (get-in state [:raft-leader-state :match-index
+                                (:from (peek in-queue))])))
      (-> state
          (update-in [:in-queue] pop)
          (assoc-in [:raft-leader-state :match-index (:from (peek in-queue))]
@@ -496,7 +502,8 @@
      (-> state
          (update-in [:raft-state :next-index]
                     merge (into {} (for [[node-id next-index] next-index
-                                         :when (>= (last-log-index raft-state) next-index)]
+                                         :when (>= (last-log-index raft-state)
+                                                   next-index)]
                                      [node-id (inc next-index)])))
          (update-in [:out-queue]
                     into (for [[node-id next-index] next-index
@@ -507,7 +514,8 @@
                             :term current-term
                             :leader-id id
                             :prev-log-index (max 0 (dec next-index))
-                            :prev-log-term (or (:term (get log (max 0 (dec next-index)))) 0)
+                            :prev-log-term
+                            (or (:term (get log (max 0 (dec next-index)))) 0)
                             :entries [(get log next-index)]
                             :from id
                             :leader-commit commit-index}))))
@@ -569,9 +577,10 @@
                             :leader-id id
                             :prev-log-index (last-log-index raft-state)
                             :prev-log-term (last-log-term raft-state)
-                            :entries [(assoc (peek in-queue)
-                                        :term current-term
-                                        :index (inc (last-log-index raft-state)))]
+                            :entries
+                            [(assoc (peek in-queue)
+                               :term current-term
+                               :index (inc (last-log-index raft-state)))]
                             :from id
                             :leader-commit commit-index}))))
    {:as state
@@ -598,11 +607,13 @@
    (seq (entries-and-callbacks waiters log last-applied))
    (do
      (log/trace "notify-commit-waiters")
-     (let [entries-and-callbacks (entries-and-callbacks waiters log commit-index)
+     (let [entries-and-callbacks (entries-and-callbacks waiters log
+                                                        commit-index)
            callbacks-to-remove (map :serial (map first entries-and-callbacks))]
        (doseq [[entry callbacks] entries-and-callbacks
                callback callbacks]
-         (log/trace "callback" callback "for" (:serial entry) "with" (:value entry) entry)
+         (log/trace "callback" callback "for" (:serial entry)
+                    "with" (:value entry) entry)
          (callback (:serial entry) (:value entry)))
        (assoc state
          :waiters (apply dissoc waiters callbacks-to-remove))))
@@ -651,8 +662,8 @@
                         raft-rules)]
     new-raft-state
     #_(if (= raft-state new-raft-state)
-      new-raft-state
-      (recur new-raft-state))))
+        new-raft-state
+        (recur new-raft-state))))
 
 (defn run-one
   "given a state of raft and an input message, step the machine to a

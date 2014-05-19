@@ -72,8 +72,9 @@
                                     (:value (:raft-state state)))
                              (doseq [entry (:log (:raft-state state))
                                      :when (:serial entry)
-                                     :when (>= (:commit-index (:raft-state state))
-                                               (:index entry))]
+                                     :when
+                                     (>= (:commit-index (:raft-state state))
+                                         (:index entry))]
                                (swap! commited assoc-in
                                       [(:id state) (:serial entry)] entry))
                              (swap! leaders assoc
