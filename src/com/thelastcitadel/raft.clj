@@ -81,10 +81,9 @@
           op (get (:log raft-state) new-last)]
       (if (= :read (:operation-type op))
         (let [read-value (apply-read (:value raft-state) op)
-              log (assoc-in raft-state [:log new-last :value] read-value)]
-          (recur (assoc raft-state
-                   :last-applied new-last
-                   :log log)))
+              new-state (assoc-in raft-state [:log new-last :value] read-value)]
+          (recur (assoc new-state
+                   :last-applied new-last)))
         (recur (assoc raft-state
                  :last-applied new-last
                  :value (apply-write (:value raft-state) op)))))
@@ -350,6 +349,34 @@
     :keys [in-queue raft-state id]
     {:keys [node-type current-term]} :raft-state}))
 
+(def skip-append-entries
+  (rule
+   (and (= node-type :follower)
+        (not (empty? in-queue))
+        (= :append-entries (:type (peek in-queue)))
+        (or (zero? (:prev-log-term (peek in-queue)))
+            (log-contains? raft-state
+                           (:prev-log-term (peek in-queue))
+                           (:prev-log-index (peek in-queue))))
+        (every? #(log-contains? raft-state (:term (peek in-queue)) (:index %))
+                (:entries (peek in-queue))))
+   (-> state
+       (update-in [:in-queue] pop)
+       (assoc-in [:raft-state :voted-for] nil)
+       (assoc-in [:raft-state :leader-id] (:leader-id (peek in-queue)))
+       (update-in [:raft-state] set-commit (:leader-commit (peek in-queue)))
+       (as-> state
+             (update-in state [:out-queue]
+                        conj {:target (:leader-id (peek in-queue))
+                              :type :append-entries-response
+                              :term current-term
+                              :success? true
+                              :last-index (last-log-index (:raft-state state))
+                              :from id})))
+   {:as state
+    :keys [in-queue raft-state id]
+    {:keys [node-type current-term voted-for]} :raft-state}))
+
 (def accept-append-entries
   (rule
    (and (= node-type :follower)
@@ -358,7 +385,9 @@
         (or (zero? (:prev-log-term (peek in-queue)))
             (log-contains? raft-state
                            (:prev-log-term (peek in-queue))
-                           (:prev-log-index (peek in-queue)))))
+                           (:prev-log-index (peek in-queue))))
+        (not (every? #(log-contains? raft-state (:term (peek in-queue)) (:index %))
+                     (:entries (peek in-queue)))))
    (-> state
        (update-in [:in-queue] pop)
        (assoc-in [:raft-state :voted-for] nil)
@@ -555,6 +584,7 @@
    #'follow-the-leader
    #'reject-append-entries-from-old-leaders
    #'reject-append-entries-with-unknown-prevs
+   #'skip-append-entries
    #'accept-append-entries
    #'handle-unsuccessful-append-entries
    #'handle-successful-append-entries
@@ -574,8 +604,9 @@
                         (fn [raft-state rule]
                           (if-let [r (rule raft-state)]
                             (do
-                              (when (= :leader (:node-type (:raft-state raft-state)))
-                                (prn rule))
+                              (when (instance? RaftState (:log (:raft-state raft-state)))
+                                (prn rule)
+                                (assert nil))
                               r)
                             raft-state))
                         raft-state
