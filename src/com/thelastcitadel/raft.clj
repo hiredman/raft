@@ -624,12 +624,8 @@
   [raft-state]
   (let [new-raft-state (reduce
                         (fn [raft-state rule]
-                          (if-let [r (rule raft-state)]
-                            (do
-                              (when (instance? RaftState (:log (:raft-state raft-state)))
-                                (prn rule)
-                                (assert nil))
-                              r)
+                          (if-let [result (rule raft-state)]
+                            result
                             raft-state))
                         raft-state
                         raft-rules)]
