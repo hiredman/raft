@@ -66,18 +66,21 @@
                   (try
                     (run in id cluster
                          (fn [state]
-                           (swap! value assoc
-                                  (:id state)
-                                  (:value (:raft-state state)))
-                           (doseq [entry (:log (:raft-state state))
-                                   :when (:serial entry)
-                                   :when (>= (:commit-index (:raft-state state))
-                                             (:index entry))]
-                             (swap! commited assoc-in
-                                    [(:id state) (:serial entry)] entry))
-                           (swap! leaders assoc
-                                  (:id state)
-                                  (:leader-id (:raft-state state)))))
+                           (try
+                             (swap! value assoc
+                                    (:id state)
+                                    (:value (:raft-state state)))
+                             (doseq [entry (:log (:raft-state state))
+                                     :when (:serial entry)
+                                     :when (>= (:commit-index (:raft-state state))
+                                               (:index entry))]
+                               (swap! commited assoc-in
+                                      [(:id state) (:serial entry)] entry))
+                             (swap! leaders assoc
+                                    (:id state)
+                                    (:leader-id (:raft-state state)))
+                             (catch Throwable t
+                               (prn t)))))
                     (catch Throwable e
                       (log/error e "whoops")))))))
      commited
@@ -154,6 +157,50 @@
       (is (apply = (vals @value)))
       (doseq [[node value] @value]
         (is (= (get value "hello") "world")))
+      (finally
+        (doseq [i nodes]
+          (>!! (:in i) {:type :stop :term 0}))
+        (Thread/sleep 50)
+        (doseq [i nodes]
+          (future-cancel (:future i))
+          (log/info @(:future i)))))))
+
+(deftest test-read-operations
+  (let [[leaders nodes commited value] (f 3)]
+    (try
+      (testing "elect leader"
+        (Thread/sleep (* 1000 30))
+        (is (= 3 (count @leaders)) @leaders)
+        (is (every? identity (vals @leaders)) @leaders)
+        (is (apply = (vals @leaders)) @leaders))
+      (let [leader (first (vals @leaders))
+            read (atom nil)]
+        (doseq [node nodes
+                :when (= leader (:id node))]
+          (>!! (:in node) {:type :operation
+                           :op :write
+                           :key "hello"
+                           :value "world"
+                           :operation-type :write
+                           :serial 1})
+          (>!! (:in node) {:type :operation
+                           :op :write
+                           :key "hello"
+                           :value "bob"
+                           :operation-type :write
+                           :serial 2})
+          #_(>!! (:in node) {:type :operation
+                           :op :read
+                           :key "hello"
+                           :operation-type :read
+                           :serial 2})
+          ;; (>!! (:in node) {:type :await
+          ;;                  :callback (fn [serial value]
+          ;;                              (reset! read value))
+          ;;                  :serial 2})
+          )
+        (Thread/sleep (* 60 1000))
+        (is (= @read "world")))
       (finally
         (doseq [i nodes]
           (>!! (:in i) {:type :stop :term 0}))

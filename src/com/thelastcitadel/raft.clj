@@ -1,4 +1,5 @@
 (ns com.thelastcitadel.raft
+  "runs the raft algorithm one step at a time."
   (:require [clojure.tools.logging :as log]))
 
 ;; TODO: this may not belong here, see about simplifying
@@ -9,10 +10,18 @@
   (send-to [cluster node msg]))
 
 (defprotocol API
-  (apply-read [value operation])
-  (apply-write [value operation]))
+  "The value that you want raft to maintain implements this protocol"
+  (apply-read [value read-operation]
+    "part of the API protocol, given a value and a read-operation,
+    return the value that would be read")
+  (apply-write [value write-operation]
+    "part of the API protocol, given a write-operation returns an
+    updated value with that write operation applied"))
 
-(defn broadcast [cluster msg]
+;; TODO: desugar this in the machine
+(defn broadcast
+  "send a message to all the nodes in a cluster"
+  [cluster msg]
   (doseq [node (list-nodes cluster)]
     (send-to cluster node msg)))
 
@@ -20,7 +29,8 @@
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
                       node-type value votes leader-id])
-(defrecord State [in-queue out-queue raft-state raft-leader-state id cluster])
+(defrecord State [in-queue out-queue raft-state raft-leader-state id cluster
+                  waiters])
 
 (defrecord MapValue []
   API
@@ -37,21 +47,34 @@
                     (:key operation) (:value operation)))
       :delete (dissoc value (:key operation)))))
 
-(defn raft [id cluster]
+(defn raft
+  "return an init state when given a node id and a cluster"
+  [id cluster]
   (->State clojure.lang.PersistentQueue/EMPTY
            clojure.lang.PersistentQueue/EMPTY
            (->RaftState 0 nil {} 0 0 :follower (->MapValue) 0 nil)
            (->RaftLeaderState {} {})
            id
-           cluster))
+           cluster
+           {}))
 
-(defmacro rule [condition change binding]
+;; TODO: try using core.match to combine condition and binding?
+(defmacro rule
+  "a rule is a function that returns either nil or an updated version
+  of whatever was passed in. the rule macro takes a condition, a
+  change, and a binding. if the condition is true the result of the
+  change is returned, other wise nil. the binding is like the
+  arguments to a function and you can destructure, etc as normal"
+  [condition change binding]
   `(fn [& args#]
      (let [~binding (first args#)]
        (when ~condition
          ~change))))
 
-(defn advance-applied-to-commit [raft-state]
+(defn advance-applied-to-commit
+  "given a RaftState, ensure all commited operations have been applied
+  to the value"
+  [raft-state]
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
@@ -62,21 +85,21 @@
           (recur (assoc raft-state
                    :last-applied new-last
                    :log log)))
-        (let [new-value (apply-write (:value raft-state) op)]
-          (recur (assoc raft-state
-                   :last-applied new-last
-                   :value new-value)))))
+        (recur (assoc raft-state
+                 :last-applied new-last
+                 :value (apply-write (:value raft-state) op)))))
     raft-state))
 
 (defn last-log-index [raft-state]
+  {:pre [(contains? raft-state :log)]}
   (apply max 0 (keys (:log raft-state))))
 
 (defn last-log-term [raft-state]
   (or (:term (get (:log raft-state) (last-log-index raft-state))) 0))
 
-(defn log-contains? [raft-state log-index log-term]
+(defn log-contains? [raft-state log-term log-index]
   (and (contains? (:log raft-state) log-index)
-       (= log-term (get (:log raft-state) log-index))))
+       (= log-term (:term (get (:log raft-state) log-index)))))
 
 (defn append-log [raft-state entries]
   {:pre [(every? (comp number? :index) entries)]
@@ -99,12 +122,16 @@
 ;;; Raft Rules
 
 (def keep-up-commited
+  "if a log entry has been commited but hasn't been applied to the
+  value, apply it"
   (rule
    (> commit-index last-applied)
    (update-in state [:raft-state] advance-applied-to-commit)
    {{:keys [commit-index last-applied]} :raft-state :as state}))
 
 (def jump-to-new-term
+  "if you see a message from a term greater than your current term,
+  jump on that band wagon"
   (rule
    (and (not (empty? in-queue))
         (number? (:term (peek in-queue)))
@@ -118,6 +145,8 @@
     :keys [in-queue] :as state}))
 
 (def new-election-on-timeout
+  "if a candidate or follower receives a timeout message, ask for
+  votes in a new term"
   (rule
    (and (not (empty? in-queue))
         (= :timeout (:type (peek in-queue)))
@@ -242,7 +271,7 @@
                     merge {:next-index
                            (into {} (for [node (list-nodes cluster)]
                                       [node (inc (last-log-index raft-state))]))
-                           :next-match
+                           :match-index
                            (into {} (for [node (list-nodes cluster)]
                                       [node 0]))})))
    {:as state
@@ -274,11 +303,9 @@
   (rule
    (and (= :append-entries (:type (peek in-queue)))
         (= node-type :candidate))
-   (do
-     (log/trace "append-entries from" (:from (peek in-queue)))
-     (update-in state [:raft-state] merge {:node-type :follower
-                                           :voted-for nil
-                                           :votes 0}))
+   (update-in state [:raft-state] merge {:node-type :follower
+                                         :voted-for nil
+                                         :votes 0})
    {:as state
     :keys [in-queue]
     {:keys [node-type]} :raft-state}))
@@ -310,13 +337,15 @@
              (not (log-contains? raft-state
                                  (:prev-log-term (peek in-queue))
                                  (:prev-log-index (peek in-queue))))))
-   (-> state
-       (update-in [:in-queue] pop)
-       (update-in [:out-queue] conj {:target (:leader-id (peek in-queue))
-                                     :type :append-entries-response
-                                     :term current-term
-                                     :success? false
-                                     :from id}))
+   (do
+     (log/trace "rejecting append-entries with unknown prevs" (peek in-queue) (keys (:log raft-state)))
+     (-> state
+         (update-in [:in-queue] pop)
+         (update-in [:out-queue] conj {:target (:leader-id (peek in-queue))
+                                       :type :append-entries-response
+                                       :term current-term
+                                       :success? false
+                                       :from id})))
    {:as state
     :keys [in-queue raft-state id]
     {:keys [node-type current-term]} :raft-state}))
@@ -332,16 +361,9 @@
                            (:prev-log-index (peek in-queue)))))
    (-> state
        (update-in [:in-queue] pop)
-       (update-in [:out-queue] conj {:target (:leader-id (peek in-queue))
-                                     :type :append-entries-response
-                                     :term current-term
-                                     :success? true
-                                     :last-index (last-log-index raft-state)
-                                     :from id})
        (assoc-in [:raft-state :voted-for] nil)
        (assoc-in [:raft-state :leader-id] (:leader-id (peek in-queue)))
-       (update-in [:raft-state]
-                  clear-log-after (:prev-log-term (peek in-queue)))
+       (update-in [:raft-state] clear-log-after (:prev-log-term (peek in-queue)))
        (update-in [:raft-state] append-log (:entries (peek in-queue)))
        (update-in [:raft-state] set-commit (:leader-commit (peek in-queue)))
        (as-> state
@@ -360,12 +382,16 @@
   (rule
    (and (not (empty? in-queue))
         (= :append-entries-response (:type (peek in-queue)))
-        (not (:success? (peek in-queue))))
-   (-> state
-       (update-in [:in-queue] pop)
-       (update-in [:raft-leader-state :next-index (:from (peek in-queue))] dec))
+        (not (:success? (peek in-queue)))
+        (not (zero? (get next-index (:from (peek in-queue))))))
+   (do
+     (log/trace "unsuccessful append entries" (seq in-queue) state)
+     (-> state
+         (update-in [:in-queue] pop)
+         (update-in [:raft-leader-state :next-index (:from (peek in-queue))] dec)))
    {:as state
     :keys [in-queue]
+    {:keys [next-index]} :raft-leader-state
     {:keys [node-type]} :raft-state}))
 
 (def handle-successful-append-entries
@@ -375,12 +401,8 @@
         (= :append-entries-response (:type (peek in-queue)))
         (:success? (peek in-queue)))
    (do
-     (when (not=
-            (:last-index (peek in-queue))
-            (get-in state [:raft-leader-state :match-index
-                           (:from (peek in-queue))]))
-       (log/trace (:from (peek in-queue)) "has accepted up to"
-                  (:last-index (peek in-queue))))
+     (assert (>= (:last-index (peek in-queue))
+                 (get-in state [:raft-leader-state :match-index (:from (peek in-queue))])))
      (-> state
          (update-in [:in-queue] pop)
          (assoc-in [:raft-leader-state :match-index (:from (peek in-queue))]
@@ -406,22 +428,30 @@
 (def advance-laggy-followers
   (rule
    (and (= node-type :leader)
-        (let [min-next (apply min (vals next-index))]
-          (and (>= (last-log-index raft-state) min-next)
-               (not (some #(some (fn [entry] (= min-next (:index entry)))
-                                 (:entries %)) out-queue)))))
+        ;; there are lagged followers
+        (seq (for [[node-id next-index] next-index
+                   :when (>= (last-log-index raft-state) next-index)]
+               true))
+        (empty? out-queue))
    (let [min-next (apply min (vals next-index))]
-     (log/trace "advance laggy followers to" min-next)
+     ;; (log/trace "advance laggy followers to" next-index)
      (-> state
-         (update-in [:out-queue] conj {:target :broadcast
-                                       :type :append-entries
-                                       :term current-term
-                                       :leader-id id
-                                       :prev-log-index (dec min-next)
-                                       :prev-log-term (dec min-next)
-                                       :entries [(get log min-next)]
-                                       :from id
-                                       :leader-commit commit-index})))
+         (update-in [:raft-state :next-index]
+                    merge (into {} (for [[node-id next-index] next-index
+                                         :when (>= (last-log-index raft-state) next-index)]
+                                     [node-id (inc next-index)])))
+         (update-in [:out-queue]
+                    into (for [[node-id next-index] next-index
+                               :when (>= (last-log-index raft-state) next-index)]
+                           {:target node-id
+                            :type :append-entries
+                            :term current-term
+                            :leader-id id
+                            :prev-log-index (max 0 (dec next-index))
+                            :prev-log-term (or (:term (get log (max 0 (dec next-index)))) 0)
+                            :entries [(get log next-index)]
+                            :from id
+                            :leader-commit commit-index}))))
    {:as state
     :keys [out-queue id]
     {:keys [node-type commit-index log current-term] :as raft-state} :raft-state
@@ -462,23 +492,57 @@
    (and (not (empty? in-queue))
         (= :operation (:type (peek in-queue)))
         (= :leader node-type))
-   (let [s (-> state
-               (update-in [:in-queue] pop)
-               (update-in [:raft-state]
-                          append-log [(assoc (peek in-queue)
-                                        :term current-term
-                                        :index
-                                        (inc (last-log-index raft-state)))]))]
-     (log/trace "accepting operations")
-     (log/trace s)
-     s)
+   (do
+     (log/trace "new index" (inc (last-log-index raft-state)))
+     (-> state
+         (update-in [:in-queue] pop)
+         (update-in [:raft-state]
+                    append-log [(assoc (peek in-queue)
+                                  :term current-term
+                                  :index
+                                  (inc (last-log-index raft-state)))])))
+   {:as state
+    :keys [in-queue id raft-state]
+    {:keys [node-type current-term commit-index]} :raft-state}))
+
+(def add-commit-waiters
+  (rule
+   (and (not (empty? in-queue))
+        (= :await (:type (peek in-queue))))
+   (-> state
+       (update-in [:in-queue] pop)
+       (update-in [:waiters (:serial (peek in-queue))]
+                  conj (:callback (peek in-queue))))
    {:as state
     :keys [in-queue id raft-state]
     {:keys [node-type current-term]} :raft-state}))
 
+(def notify-commit-waiters
+  (rule
+   (seq (for [serial (keys waiters)
+              entry log
+              :when (= serial (:serial entry))
+              :when (>= commit-index (:index entry))]
+          entry))
+   (let [entries-and-callbacks (for [[serial callbacks] waiters
+                                     entry log
+                                     :when (= serial (:serial entry))
+                                     :when (>= commit-index (:index entry))]
+                                 [entry callbacks])
+         callbacks-to-remove (map :serial (keys entries-and-callbacks))]
+     (doseq [[entry callbacks] entries-and-callbacks
+             callback callbacks]
+       (callback (:serial entry) (:value entry)))
+     (assoc state
+       :waiters (apply dissoc waiters callbacks-to-remove)))
+   {:as state
+    :keys [waiters]
+    {:keys [commit-index log]} :raft-state}))
+
 ;;;
 
 (def raft-rules
+  "list of rules for raft"
   [#'keep-up-commited
    #'jump-to-new-term
    #'new-election-on-timeout
@@ -498,13 +562,21 @@
    #'advance-commit
    #'drop-append-entry-responses-from-previous-terms
    #'raft-remove-node
-   #'leader-accept-operations])
+   #'leader-accept-operations
+   #'add-commit-waiters
+   #'notify-commit-waiters])
 
-(defn step [raft-state]
+(defn step
+  "given a raft state, run the machine forward until no more progress
+  can be made, return the new state"
+  [raft-state]
   (let [new-raft-state (reduce
                         (fn [raft-state rule]
                           (if-let [r (rule raft-state)]
-                            r
+                            (do
+                              (when (= :leader (:node-type (:raft-state raft-state)))
+                                (prn rule))
+                              r)
                             raft-state))
                         raft-state
                         raft-rules)]
@@ -512,7 +584,10 @@
       new-raft-state
       (recur new-raft-state))))
 
-(defn run-one [state message]
+(defn run-one
+  "given a state of raft and an input message, step the machine to a
+  new state, returning it"
+  [state message]
   (let [cluster (:cluster state)]
     (if (= :stop (:type message))
       (do
