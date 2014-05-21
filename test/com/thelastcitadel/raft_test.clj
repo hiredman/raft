@@ -144,9 +144,6 @@
 
 (defn shut-it-down! [nodes]
   (doseq [i nodes]
-    (>!! (:in i) {:type :stop :term 0}))
-  (Thread/sleep (* n 0.01))
-  (doseq [i nodes]
     (future-cancel (:future i))))
 
 (defn leaders-of [nodes n]
@@ -295,3 +292,23 @@
         (is (= (v c (* 1000 60) :timeout) "bob")))
       (finally
         (shut-it-down! nodes)))))
+
+(deftest test-kill-node
+  (dotimes [i 4]
+    (let [n (+ 1 (* (inc i) 2))
+          leader (chan (dropping-buffer 10))
+          [leaders nodes] (f n leader)]
+      (try
+        (testing "elect leader"
+          (is (= n (count (leaders-of nodes n))))
+          (is (apply = (leaders-of nodes n))))
+        (testing "kill leader and elect a new one"
+          (let [[leader'] (leaders-of nodes 1)
+                c (chan (sliding-buffer 10))]
+            (doseq [node nodes
+                    :when (= leader' (:id node))]
+              (future-cancel (:future node)))
+            (is (apply = (leaders-of (remove #(= leader' (:id %)) nodes) (dec n))))))
+        (finally
+          (shut-it-down! nodes)))))
+)
