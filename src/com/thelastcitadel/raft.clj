@@ -13,8 +13,6 @@
 ;; TODO: refactor these states, have a top level Env defrecord
 ;; TODO: document log entry format
 ;; defrecords mainly just to document the expected fields
-;; TODO: move node-set in to raft-state, add special operations to
-;; alter it
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
                       node-type value votes leader-id node-set])

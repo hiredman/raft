@@ -9,14 +9,16 @@
   (fn [f]
     (time
      (do
+       (println "global test start")
        (f)
-       (print "global timing ")))))
+       (print "global test end    ")))))
 
 (use-fixtures :each
   (fn [f]
     (time
      (do
-       (print "start test ")
+       (print " start test ")
+       (flush)
        (f)
        (print "timing ")))))
 
@@ -50,32 +52,38 @@
                          (+ 500 (rand-int 1000))))
                       ([_] {:type :timeout
                             :term 0}))]
-         (if (= :await (:type message))
-           (recur state (update-in callbacks [(:serial message)]
-                                   conj (:callback message)))
-           (let [new-state (run-one state message)
-                 _ (callback state new-state)
-                 _ (doseq [msg (:out-queue new-state)]
-                     (assert (not= :broadcast (:target msg)))
-                     (send-to cluster (:target msg) msg))
-                 _ (doseq [{:keys [level message] :as m} (:running-log new-state)]
-                     (case level
-                       :trace (log/trace message)))
-                 new-state (update-in new-state [:out-queue] empty)
-                 new-state (update-in new-state [:running-log] empty)
-                 callbacks (reduce
-                            (fn [cbs fun] (fun cbs))
-                            callbacks
-                            (for [{:keys [serial] :as entry}
-                                  (:applied new-state)
-                                  :when (contains? callbacks serial)
-                                  callback (get callbacks serial)]
-                              (fn [callbacks]
-                                (callback entry)
-                                (dissoc callbacks serial))))]
-             (if (:stopped? new-state)
-               new-state
-               (recur new-state callbacks))))))))
+         (cond
+          (= :await (:type message))
+          (recur state (update-in callbacks [(:serial message)]
+                                  conj (:callback message)))
+          (= :leader? (:type message))
+          (do
+            ((:callback message) (:leader-id (:raft-state state)))
+            (recur state callbacks))
+          :else
+          (let [new-state (run-one state message)
+                _ (callback state new-state)
+                _ (doseq [msg (:out-queue new-state)]
+                    (assert (not= :broadcast (:target msg)))
+                    (send-to cluster (:target msg) msg))
+                _ (doseq [{:keys [level message] :as m} (:running-log new-state)]
+                    (case level
+                      :trace (log/trace message)))
+                new-state (update-in new-state [:out-queue] empty)
+                new-state (update-in new-state [:running-log] empty)
+                callbacks (reduce
+                           (fn [cbs fun] (fun cbs))
+                           callbacks
+                           (for [{:keys [serial] :as entry}
+                                 (:applied new-state)
+                                 :when (contains? callbacks serial)
+                                 callback (get callbacks serial)]
+                             (fn [callbacks]
+                               (callback entry)
+                               (dissoc callbacks serial))))]
+            (if (:stopped? new-state)
+              new-state
+              (recur new-state callbacks))))))))
 
 (defrecord ChannelCluster []
   Cluster
@@ -93,19 +101,15 @@
   (let [leaders (atom {})
         commited (atom {})
         value (atom {})
-        n (for [i (range n)]
-            {:id i
-             :in (chan (sliding-buffer 10))})
-        n (for [{:keys [id] :as m} n]
-            (assoc m
-              :cluster (->> n
-                            (remove #(= id (:id %)))
-                            (reduce
-                             #(add-node %1 (:id %2) (:in %2))
-                             (->ChannelCluster)))))]
+        m (into {} (for [i (range n)]
+                     [i (chan (sliding-buffer 10))]))
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) m)]
     [leaders
-     (doall (for [{:keys [id in cluster] :as m} n]
-              (assoc m
+     (doall (for [[id in] m]
+              (assoc {}
+                :id id
+                :in in
+                :cluster cluster
                 :future
                 (future
                   (try
@@ -145,14 +149,29 @@
   (doseq [i nodes]
     (future-cancel (:future i))))
 
+(defn leaders-of [nodes n]
+  (loop []
+    (let [lead (seq (for [node nodes
+                          :let [c (chan 1)
+                                _ (>!! (:in node) {:type :leader?
+                                                   :callback (fn [leader-id]
+                                                               (>!! c (or leader-id :none)))})
+                                r (alt!!
+                                   c ([m] m)
+                                   (timeout 1000) ([_] :none))]
+                          :when (not= r :none)]
+                      r))]
+      (if (>= (count lead) n)
+        lead
+        (do
+          (Thread/sleep 1000)
+          (recur))))))
+
 (deftest test-election
   (let [leader (chan (dropping-buffer 10))
         [leaders nodes] (f 3 leader)]
     (try
-      (dotimes [_ 3] (v leader (* 60 1000) :timeout))
-      (is (= 3 (count @leaders)) @leaders)
-      (is (every? identity (vals @leaders)) @leaders)
-      (is (apply = (vals @leaders)) @leaders)
+      (is (apply = (leaders-of nodes 3)) @leaders)
       (finally
         (shut-it-down! nodes)))))
 
@@ -161,13 +180,11 @@
         [leaders nodes] (f 5 leader)]
     (try
       (testing "elect leader"
-        (dotimes [_ 5] (v leader (* 60 1000) :timeout))
-        (is (= 5 (count @leaders)) @leaders)
-        (is (every? identity (vals @leaders)) @leaders)
-        (is (apply = (vals @leaders)) @leaders))
+        (is (= 5 (count (leaders-of nodes 5))))
+        (is (apply = (leaders-of nodes 5))))
       (testing "kill leader and elect a new one"
-        (let [leader' (first (vals @leaders))]
-          (reset! leaders {})
+        (let [[leader'] (leaders-of nodes 1)
+              c (chan (sliding-buffer 10))]
           (doseq [node nodes
                   :when (= leader' (:id node))]
             (>!! (:in node) {:type :operation
@@ -184,34 +201,30 @@
                                  :serial 1})
                 (v c (* 1000 60) :timeout)))
             (>!! (:in node) {:type :stop :term 0}))
-          (dotimes [_ 4]
-            (v leader (* 60 1000) :timeout)))
-        (is (= 4 (count @leaders)) @leaders)
-        (is (every? identity (vals @leaders)) @leaders)
-        (is (apply = (vals @leaders)) @leaders))
-      (testing "kill leader again and elect a new one"
-        (let [leader (first (vals @leaders))]
-          (reset! leaders {})
-          (doseq [node nodes
-                  :when (= leader (:id node))]
-            (>!! (:in node) {:type :operation
-                             :op :write
-                             :node leader
-                             :operation-type :remove-node
-                             :serial 2})
-            (doseq [node nodes
-                    :when (not (future-done? (:future node)))]
-              (let [c (chan)]
-                (>!! (:in node) {:type :await
-                                 :callback (fn [_]
-                                             (close! c))
-                                 :serial 2})
-                (v c (* 1000 60) :timeout)))
-            (>!! (:in node) {:type :stop})))
-        (dotimes [_ 3] (v leader (* 1000 60) :timeout))
-        (is (= 3 (count @leaders)) @leaders)
-        (is (every? identity (vals @leaders)) @leaders)
-        (is (apply = (vals @leaders)) @leaders))
+          (let [nodes (for [node nodes
+                            :when (not= (:id node) leader')]
+                        node)]
+            (is (= 4 (count (leaders-of nodes 4))))
+            (is (apply = (leaders-of nodes 4)))
+            (testing "kill leader again and elect a new one"
+              (let [[leader] (leaders-of nodes 1)]
+                (doseq [node nodes
+                        :when (= leader (:id node))]
+                  (>!! (:in node) {:type :operation
+                                   :op :write
+                                   :node leader
+                                   :operation-type :remove-node
+                                   :serial 2})
+                  (doseq [node nodes
+                          :when (not (future-done? (:future node)))]
+                    (let [c (chan)]
+                      (>!! (:in node) {:type :await
+                                       :callback (fn [_]
+                                                   (close! c))
+                                       :serial 2})
+                      (v c (* 1000 60) :timeout)))
+                  (>!! (:in node) {:type :stop})))
+              (is (apply = (leaders-of nodes 3)))))))
       (finally
         (shut-it-down! nodes)))))
 
@@ -220,11 +233,8 @@
         [leaders nodes commited value] (f 5 leader)]
     (try
       (testing "elect leader"
-        (dotimes [_ 5] (v leader (* 60 1000) :timeout))
-        (is (= 5 (count @leaders)) @leaders)
-        (is (every? identity (vals @leaders)) @leaders)
-        (is (apply = (vals @leaders)) @leaders))
-      (let [leader (first (vals @leaders))
+        (is (apply = (leaders-of nodes 5))))
+      (let [[leader] (leaders-of nodes 5)
             c (chan 2)]
         (doseq [node nodes
                 :when (= leader (:id node))]
