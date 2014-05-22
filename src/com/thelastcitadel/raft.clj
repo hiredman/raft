@@ -1,5 +1,6 @@
 (ns com.thelastcitadel.raft
-  "runs the raft algorithm one step at a time.")
+  "runs the raft algorithm one step at a time."
+  (:import (clojure.lang PersistentQueue)))
 
 (defprotocol API
   "The value that you want raft to maintain implements this protocol"
@@ -12,6 +13,7 @@
 
 ;; TODO: refactor these states, have a top level Env defrecord
 ;; TODO: document log entry format
+;; TODO: knossos
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
@@ -37,12 +39,13 @@
 (defn raft
   "return an init state when given a node id and a node-set"
   [id node-set]
-  (->State clojure.lang.PersistentQueue/EMPTY
-           clojure.lang.PersistentQueue/EMPTY
-           (->RaftState 0 nil {} 0 0 :follower (->MapValue) 0 nil (set node-set))
+  (->State PersistentQueue/EMPTY
+           PersistentQueue/EMPTY
+           (->RaftState 0 nil {} 0 0 :follower (->MapValue) 0 nil
+                        (set node-set))
            (->RaftLeaderState {} {})
            id
-           clojure.lang.PersistentQueue/EMPTY
+           PersistentQueue/EMPTY
            #{}))
 
 ;; TODO: try using core.match to combine condition and binding?
@@ -147,10 +150,10 @@
   "given a state and a log message (as a seq of strings) append the
   message to the log at the trace level"
   [state & message]
-  {:pre [(instance? clojure.lang.PersistentQueue (:running-log state))]
-   :post [(instance? clojure.lang.PersistentQueue (:running-log %))]}
+  {:pre [(instance? PersistentQueue (:running-log state))]
+   :post [(instance? PersistentQueue (:running-log %))]}
   (update-in state [:running-log]
-             (fnil conj clojure.lang.PersistentQueue/EMPTY)
+             (fnil conj PersistentQueue/EMPTY)
              {:level :trace
               :message (apply print-str message)}))
 
@@ -247,7 +250,7 @@
   (rule
    (candidate-or-follower-timed-out-waiting-for-message? in-queue node-type)
    (do
-     (assert (instance? clojure.lang.PersistentQueue (:running-log state)))
+     (assert (instance? PersistentQueue (:running-log state)))
      (-> state
          (log-trace id "a" node-type "requests a vote for" (inc current-term))
          (consume-message)
@@ -373,7 +376,8 @@
                     :leader-commit commit-index})))
    {:as state
     :keys [id in-queue]
-    {:keys [current-term commit-index node-type node-set] :as raft-state} :raft-state}))
+    {:keys [current-term commit-index node-type node-set]
+     :as raft-state} :raft-state}))
 
 (def follow-the-leader
   (rule
@@ -620,6 +624,42 @@
     {:keys [next-index]} :raft-leader-state
     {:keys [node-type current-term commit-index log]} :raft-state}))
 
+(def follower-forward-operations-when-leader
+  (rule
+   (and (not (empty? in-queue))
+        (= :operation (:type (peek in-queue)))
+        (not= :leader node-type)
+        leader-id
+        (not (seq (for [[index entry] log
+                        :when (= (:serial (peek in-queue))
+                                 (:serail entry))]
+                    entry))))
+   (-> state
+       (consume-message)
+       (publish [(assoc (peek in-queue)
+                   :target leader-id)]))
+   {:as state
+    :keys [in-queue id raft-state]
+    {:keys [next-index]} :raft-leader-state
+    {:keys [node-type current-term commit-index log leader-id]} :raft-state}))
+
+(def follower-skip-operations-no-leader
+  (rule
+   (and (not (empty? in-queue))
+        (= :operation (:type (peek in-queue)))
+        (not= :leader node-type)
+        (nil? leader-id)
+        (not (seq (for [[index entry] log
+                        :when (= (:serial (peek in-queue))
+                                 (:serail entry))]
+                    entry))))
+   (-> state
+       (consume-message))
+   {:as state
+    :keys [in-queue id raft-state]
+    {:keys [next-index]} :raft-leader-state
+    {:keys [node-type current-term commit-index log leader-id]} :raft-state}))
+
 (def leader-skip-accepted-operation
   "if the leader receives an operation with a serial id already in the
   log, ignore it"
@@ -661,7 +701,9 @@
    #'advance-commit
    #'drop-append-entry-responses-from-previous-terms
    #'leader-accept-operations
-   #'leader-skip-accepted-operation])
+   #'leader-skip-accepted-operation
+   #'follower-forward-operations-when-leader
+   #'follower-skip-operations-no-leader])
 
 (defn step
   "given a raft state, run the machine forward until no more progress
@@ -669,10 +711,11 @@
   [raft-state]
   (reduce
    (fn [raft-state rule]
-     (assert (instance? clojure.lang.PersistentQueue (:running-log raft-state)))
+     (assert (instance? PersistentQueue (:running-log raft-state)))
      (if-let [result (rule raft-state)]
        (do
-         (assert (instance? clojure.lang.PersistentQueue (:running-log raft-state)))
+         (assert (instance? PersistentQueue
+                            (:running-log raft-state)))
          result)
        raft-state))
    raft-state
@@ -682,7 +725,7 @@
   "given a state of raft and an input message, step the machine to a
   new state, returning it"
   [state message]
-  (assert (instance? clojure.lang.PersistentQueue (:running-log state)))
+  (assert (instance? PersistentQueue (:running-log state)))
   (let [node-set (:node-set (:raft-state state))]
     (if (= :stop (:type message))
       (-> state
@@ -693,7 +736,7 @@
         (assert (set? (:node-set (:raft-state new-state))))
         (assert (>= (count (:node-set (:raft-state state)))
                     (count (:node-set (:raft-state new-state)))))
-        (assert (instance? clojure.lang.PersistentQueue (:running-log state)))
+        (assert (instance? PersistentQueue (:running-log state)))
         (assert (not= (:in-queue state)
                       (:in-queue new-state))
                 (pr-str new-state (seq (:in-queue new-state))))

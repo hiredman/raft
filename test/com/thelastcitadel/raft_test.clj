@@ -1,7 +1,8 @@
 (ns com.thelastcitadel.raft-test
   (:require [clojure.test :refer :all]
             [com.thelastcitadel.raft :refer :all]
-            [clojure.core.async :refer [alt!! timeout <!! >!! chan sliding-buffer dropping-buffer
+            [clojure.core.async :refer [alt!! timeout <!! >!! chan
+                                        sliding-buffer dropping-buffer
                                         close!]]
             [clojure.tools.logging :as log]))
 
@@ -49,7 +50,7 @@
                       (timeout
                        (if (= :leader (:node-type (:raft-state state)))
                          300
-                         (+ 500 (rand-int 1000))))
+                         (+ 500 (* 100 (rand-int 10)))))
                       ([_] {:type :timeout
                             :term 0}))]
          (cond
@@ -66,7 +67,8 @@
                 _ (doseq [msg (:out-queue new-state)]
                     (assert (not= :broadcast (:target msg)))
                     (send-to cluster (:target msg) msg))
-                _ (doseq [{:keys [level message] :as m} (:running-log new-state)]
+                _ (doseq [{:keys [level message] :as m}
+                          (:running-log new-state)]
                     (case level
                       :trace (log/trace message)))
                 new-state (update-in new-state [:out-queue] empty)
@@ -150,9 +152,11 @@
   (loop []
     (let [lead (seq (for [node nodes
                           :let [c (chan 1)
-                                _ (>!! (:in node) {:type :leader?
-                                                   :callback (fn [leader-id]
-                                                               (>!! c (or leader-id :none)))})
+                                _ (>!! (:in node)
+                                       {:type :leader?
+                                        :callback
+                                        (fn [leader-id]
+                                          (>!! c (or leader-id :none)))})
                                 r (alt!!
                                    c ([m] m)
                                    (timeout 1000) ([_] :none))]
@@ -294,21 +298,26 @@
         (shut-it-down! nodes)))))
 
 (deftest test-kill-node
-  (dotimes [i 4]
-    (let [n (+ 1 (* (inc i) 2))
+  (dotimes [i 5]
+    (let [n (inc (* (inc i) 2))
           leader (chan (dropping-buffer 10))
           [leaders nodes] (f n leader)]
       (try
         (testing "elect leader"
           (is (= n (count (leaders-of nodes n))))
           (is (apply = (leaders-of nodes n))))
-        (testing "kill leader and elect a new one"
-          (let [[leader'] (leaders-of nodes 1)
-                c (chan (sliding-buffer 10))]
-            (doseq [node nodes
-                    :when (= leader' (:id node))]
-              (future-cancel (:future node)))
-            (is (apply = (leaders-of (remove #(= leader' (:id %)) nodes) (dec n))))))
+        (dotimes [ii (Math/floor (/ n 2))]
+          (log/trace i n ii)
+          (testing "kill leader and elect a new one"
+            (let [[leader'] (leaders-of nodes 1)]
+              (doseq [node nodes
+                      :when (= leader' (:id node))]
+                (future-cancel (:future node)))
+              (let [s (- (* n 1000)
+                         (* (- ii 2) 1000))]
+                (log/trace "sleeping" s)
+                (Thread/sleep s))
+              (is (apply = (leaders-of (remove #(= leader' (:id %)) nodes)
+                                       (- n (inc ii))))))))
         (finally
-          (shut-it-down! nodes)))))
-)
+          (shut-it-down! nodes))))))
