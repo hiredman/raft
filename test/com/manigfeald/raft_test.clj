@@ -16,7 +16,8 @@
         result (original-test-var v)]
     (clojure.tools.logging/trace
      "testing" v "took"
-     (- (System/currentTimeMillis) start) "milliseconds")
+     (/ (- (System/currentTimeMillis) start) 1000.0)
+     "seconds")
     result))
 
 (def original-test-ns test-ns)
@@ -27,7 +28,8 @@
         result (original-test-ns ns)]
     (clojure.tools.logging/trace
      "testing namespace" ns "took"
-     (- (System/currentTimeMillis) start) "milliseconds")
+     (/ (- (System/currentTimeMillis) start) 1000.0)
+     "seconds")
     result))
 
 (in-ns 'com.manigfeald.raft-test)
@@ -315,7 +317,6 @@
           (is (= n (count (leaders-of nodes n))))
           (is (apply = (leaders-of nodes n))))
         (dotimes [ii (Math/floor (/ n 2))]
-          (log/trace i n ii)
           (testing "kill leader and elect a new one"
             (let [[leader'] (leaders-of nodes 1)]
               (doseq [node nodes
