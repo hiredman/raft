@@ -6,22 +6,31 @@
                                         close!]]
             [clojure.tools.logging :as log]))
 
-(use-fixtures :once
-  (fn [f]
-    (time
-     (do
-       (println "global test start")
-       (f)
-       (print "global test end    ")))))
+(in-ns 'clojure.test)
 
-(use-fixtures :each
-  (fn [f]
-    (time
-     (do
-       (print " start test ")
-       (flush)
-       (f)
-       (print "timing ")))))
+(def original-test-var  test-var)
+
+(defn test-var [v]
+  (clojure.tools.logging/trace "testing" v)
+  (let [start (System/currentTimeMillis)
+        result (original-test-var v)]
+    (clojure.tools.logging/trace
+     "testing" v "took"
+     (- (System/currentTimeMillis) start) "milliseconds")
+    result))
+
+(def original-test-ns test-ns)
+
+(defn test-ns [ns]
+  (clojure.tools.logging/trace "testing namespace" ns)
+  (let [start (System/currentTimeMillis)
+        result (original-test-ns ns)]
+    (clojure.tools.logging/trace
+     "testing namespace" ns "took"
+     (- (System/currentTimeMillis) start) "milliseconds")
+    result))
+
+(in-ns 'com.manigfeald.raft-test)
 
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
@@ -44,7 +53,6 @@
   ([in id cluster callback]
      (loop [state (raft id (conj (set (list-nodes cluster)) id))
             callbacks {}]
-       (assert (instance? clojure.lang.PersistentQueue (:running-log state)))
        (let [message (alt!!
                       in ([message] message)
                       (timeout
@@ -138,7 +146,7 @@
                              (catch Throwable t
                                (prn t)))))
                     (catch Throwable e
-                      (log/error e "whoops")))))))
+                      (log/error (type e) (.getMessage e))))))))
      commited
      value]))
 
