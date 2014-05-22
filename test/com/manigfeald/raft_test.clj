@@ -1,6 +1,6 @@
-(ns com.thelastcitadel.raft-test
+(ns com.manigfeald.raft-test
   (:require [clojure.test :refer :all]
-            [com.thelastcitadel.raft :refer :all]
+            [com.manigfeald.raft :refer :all]
             [clojure.core.async :refer [alt!! timeout <!! >!! chan
                                         sliding-buffer dropping-buffer
                                         close!]]

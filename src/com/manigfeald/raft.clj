@@ -1,4 +1,4 @@
-(ns com.thelastcitadel.raft
+(ns com.manigfeald.raft
   "runs the raft algorithm one step at a time."
   (:import (clojure.lang PersistentQueue)))
 
