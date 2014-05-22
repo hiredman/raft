@@ -533,7 +533,6 @@
 (def advance-laggy-followers
   (rule
    (and (= node-type :leader)
-        ;; there are lagged followers
         (seq (for [[node-id next-index] next-index
                    :when (>= (last-log-index raft-state) next-index)
                    :when (get log next-index)]
@@ -584,8 +583,7 @@
 
 (def leader-accept-operations
   (rule
-   (and (not (empty? in-queue))
-        (= :operation (:type (peek in-queue)))
+   (and (received-message-of-type? in-queue :operation)
         (= :leader node-type)
         (not (seq (for [[index entry] log
                         :when (= (:serial (peek in-queue))
@@ -626,8 +624,7 @@
 
 (def follower-forward-operations-when-leader
   (rule
-   (and (not (empty? in-queue))
-        (= :operation (:type (peek in-queue)))
+   (and (received-message-of-type? in-queue :operation-type)
         (not= :leader node-type)
         leader-id
         (not (seq (for [[index entry] log
@@ -645,8 +642,7 @@
 
 (def follower-skip-operations-no-leader
   (rule
-   (and (not (empty? in-queue))
-        (= :operation (:type (peek in-queue)))
+   (and (received-message-of-type? in-queue :operation)
         (not= :leader node-type)
         (nil? leader-id)
         (not (seq (for [[index entry] log
@@ -664,8 +660,7 @@
   "if the leader receives an operation with a serial id already in the
   log, ignore it"
   (rule
-   (and (not (empty? in-queue))
-        (= :operation (:type (peek in-queue)))
+   (and (received-message-of-type? in-queue :operation)
         (= :leader node-type)
         (seq (for [[index entry] log
                    :when (= (:serial (peek in-queue))
