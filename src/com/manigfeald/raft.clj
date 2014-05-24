@@ -2,7 +2,7 @@
   "runs the raft algorithm one step at a time."
   (:import (clojure.lang PersistentQueue)))
 
-(defprotocol API
+(defprotocol RaftOperations
   "The value that you want raft to maintain implements this protocol"
   (apply-read [value read-operation]
     "part of the API protocol, given a value and a read-operation,
@@ -18,11 +18,15 @@
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
                       node-type value votes leader-id node-set])
-(defrecord State [in-queue out-queue raft-state raft-leader-state id
-                  running-log applied])
+(defrecord IO [message out-queue])
+(defrecord Timer [now next-timeout period])
+(defrecord ImplementationState [io raft-state raft-leader-state id running-log timer])
+
+(declare ->State)
+(declare log-contains?)
 
 (defrecord MapValue []
-  API
+  RaftOperations
   (apply-read [value operation]
     (case (:op operation)
       :read (get value (:key operation))))
@@ -93,9 +97,6 @@
 (defn last-log-term [raft-state]
   (or (:term (get (:log raft-state) (last-log-index raft-state))) 0N))
 
-(defn log-contains? [raft-state log-term log-index]
-  (and (contains? (:log raft-state) log-index)
-       (= log-term (:term (get (:log raft-state) log-index)))))
 
 (defn append-log [raft-state entries]
   {:post [(map? (:log %))]}
@@ -180,20 +181,22 @@
        (or (= node-type :candidate)
            (= node-type :follower))))
 
-(defn recv-vote-request-and-havent-voted-yet? [in-queue voted-for node-type]
+(defn recv-vote-request-and-havent-voted-yet? [in-queue voted-for node-type term]
   (and (received-message-of-type? in-queue :request-vote)
        (or (nil? voted-for)
            (= voted-for (:candidate-id (peek in-queue))))
        (or (= node-type :candidate)
-           (= node-type :follower))))
+           (= node-type :follower))
+       (= (:term (peek in-queue)) term)))
 
-(defn recv-vote-request-and-alread-voted? [in-queue node-type voted-for]
+(defn recv-vote-request-and-alread-voted? [in-queue node-type voted-for term]
   (and (received-message-of-type? in-queue :request-vote)
        (and (not (nil? voted-for))
             (not= voted-for (:candidate-id (peek in-queue))))
        (or (= node-type :candidate)
            (= node-type :follower)
-           (= node-type :leader))))
+           (= node-type :leader))
+       (= (:term (peek in-queue)) term)))
 
 (defn recv-vote-for-this-node? [in-queue]
   (and (received-message-of-type? in-queue :request-vote-response)
@@ -235,14 +238,40 @@
   "if you see a message from a term greater than your current term,
   jump on that band wagon"
   (rule
-   (message-has-later-term? in-queue current-term)
+   (and (message-has-later-term? in-queue current-term)
+        (not= :request-vote (:type (peek in-queue))))
    (-> state
+       (log-trace "jump-to-new-term" current-term (peek in-queue))
+       (consume-message)
        (update-in [:raft-state] merge {:node-type :follower
                                        :voted-for nil
                                        :votes 0
                                        :current-term (:term (peek in-queue))}))
    {{:keys [current-term]} :raft-state
     :keys [in-queue] :as state}))
+
+(def jump-to-new-term-and-vote
+  "if you see a message from a term greater than your current term,
+  jump on that band wagon"
+  (rule
+   (and (message-has-later-term? in-queue current-term)
+        (= :request-vote (:type (peek in-queue))))
+   (-> state
+       (log-trace "jump-to-new-term" current-term (peek in-queue))
+       (update-in [:raft-state] merge {:node-type :follower
+                                       :voted-for nil
+                                       :votes 0
+                                       :current-term (:term (peek in-queue))})
+       (log-trace id "votes for" (:candidate-id (peek in-queue)))
+       (consume-message)
+       (in-> :raft-state (assoc :voted-for (:candidate-id (peek in-queue))))
+       (publish [{:type :request-vote-response
+                  :target (:candidate-id (peek in-queue))
+                  :term current-term
+                  :vote? true
+                  :from id}]))
+   {{:keys [current-term]} :raft-state
+    :keys [in-queue id] :as state}))
 
 (def new-election-on-timeout
   "if a candidate or follower receives a timeout message, ask for
@@ -269,15 +298,16 @@
                (assoc :term (inc current-term)
                       :node-type :candidate
                       :voted-for id
-                      :votes 0))))
+                      :votes 1))))
    {:keys [id in-queue raft-state]
     {:keys [current-term node-type node-set]} :raft-state
     :as state}))
 
 (def respond-to-vote-request-success
   (rule
-   (recv-vote-request-and-havent-voted-yet? in-queue voted-for node-type)
+   (recv-vote-request-and-havent-voted-yet? in-queue voted-for node-type current-term)
    (-> state
+       (log-trace id "votes for" (:candidate-id (peek in-queue)))
        (consume-message)
        (in-> :raft-state (assoc :voted-for (:candidate-id (peek in-queue))))
        (publish [{:type :request-vote-response
@@ -291,7 +321,7 @@
 
 (def respond-to-vote-request-failure
   (rule
-   (recv-vote-request-and-alread-voted? in-queue node-type voted-for)
+   (recv-vote-request-and-alread-voted? in-queue node-type voted-for current-term)
    (-> state
        (log-trace id "doesn't vote for" (:candidate-id (peek in-queue)))
        (consume-message)
@@ -304,37 +334,14 @@
     :keys [id in-queue]
     {:keys [voted-for node-type current-term]} :raft-state}))
 
-(def receive-vote-success
+(def receive-vote-success-become-leader
   (rule
-   (recv-vote-for-this-node? in-queue)
+   (and (recv-vote-for-this-node? in-queue)
+        (this-node-voted-in-to-power? (inc votes) node-set))
    (-> state
-       (log-trace (:from (peek in-queue))
-                  "voted for" (:id state) "in"
-                  (:current-term (:raft-state state)))
+       (log-trace (:from (peek in-queue)) "voted for" (:id state) "in" (:current-term (:raft-state state)))
        (consume-message)
-       (update-in [:raft-state :votes] inc))
-   {:as state
-    :keys [in-queue]
-    {:keys [node-type]} :raft-state}))
-
-(def receive-vote-failure
-  (rule
-   (and (not (empty? in-queue))
-        (= :request-vote-response (:type (peek in-queue)))
-        (not (:vote? (peek in-queue)))
-        #_(= node-type :candidate))
-   (-> state
-       (consume-message))
-   {:as state
-    :keys [in-queue]
-    {:keys [node-type]} :raft-state}))
-
-(def become-leader
-  (rule
-   (this-node-voted-in-to-power? votes node-set)
-   (-> state
-       (log-trace (:id state) "becomes leader in term"
-                  current-term "with" votes "votes")
+       (log-trace (:id state) "becomes leader in term" current-term "with" (inc votes) "votes")
        (publish (broadcast
                  node-set
                  {:type :append-entries
@@ -358,9 +365,67 @@
                          (into {} (for [node node-set]
                                     [node 0]))}))
    {:as state
-    :keys [id]
-    {:keys [votes current-term commit-index node-type node-set]
-     :as raft-state} :raft-state}))
+    :keys [in-queue id]
+    {:keys [node-type votes node-set current-term commit-index] :as raft-state} :raft-state}))
+
+(def receive-vote-success-tally
+  (rule
+   (and (recv-vote-for-this-node? in-queue)
+        (not (this-node-voted-in-to-power? (inc votes) node-set)))
+   (-> state
+       (log-trace (:from (peek in-queue))
+                  "voted for" (:id state) "in"
+                  (:current-term (:raft-state state)))
+       (consume-message)
+       (update-in [:raft-state :votes] inc))
+   {:as state
+    :keys [in-queue]
+    {:keys [node-type votes node-set]} :raft-state}))
+
+(def receive-vote-failure
+  (rule
+   (and (not (empty? in-queue))
+        (= :request-vote-response (:type (peek in-queue)))
+        (not (:vote? (peek in-queue)))
+        #_(= node-type :candidate))
+   (-> state
+       (consume-message))
+   {:as state
+    :keys [in-queue]
+    {:keys [node-type]} :raft-state}))
+
+;; (def become-leader
+;;   (rule
+;;    (this-node-voted-in-to-power? votes node-set)
+;;    (-> state
+;;        (log-trace (:id state) "becomes leader in term"
+;;                   current-term "with" votes "votes")
+;;        (publish (broadcast
+;;                  node-set
+;;                  {:type :append-entries
+;;                   :term current-term
+;;                   :leader-id id
+;;                   :prev-log-index (last-log-index raft-state)
+;;                   :prev-log-term (last-log-term raft-state)
+;;                   :entries []
+;;                   :from id
+;;                   :leader-commit commit-index}))
+;;        (in-> :raft-state
+;;              (assoc :node-type :leader
+;;                     :voted-for nil
+;;                     :votes 0
+;;                     :leader-id id))
+;;        (update-in [:raft-leader-state]
+;;                   merge {:next-index
+;;                          (into {} (for [node node-set]
+;;                                     [node (inc (last-log-index raft-state))]))
+;;                          :match-index
+;;                          (into {} (for [node node-set]
+;;                                     [node 0]))}))
+;;    {:as state
+;;     :keys [id]
+;;     {:keys [votes current-term commit-index node-type node-set]
+;;      :as raft-state} :raft-state}))
 
 (def heart-beat
   (rule
@@ -562,22 +627,22 @@
                                          :when (>= (last-log-index raft-state)
                                                    next-index)]
                                      [node-id (inc next-index)])))
-         (publish (for [[node-id next-index] next-index
-                        :when (>= (last-log-index raft-state) next-index)
-                        :when (get log next-index)
-                        :let [prev (max 0 (dec next-index))
-                              prev-term (or (:term (get log prev)) 0)]]
-                    {:target node-id
-                     :type :append-entries
-                     :term current-term
-                     :leader-id id
-                     :prev-log-index prev
-                     :prev-log-term prev-term
-                     :entries (for [index (range next-index (inc (last-log-index raft-state)))]
-                                (get log index))
-                     :from id
-                     :leader-commit commit-index}))
          #_(publish (for [[node-id next-index] next-index
+                          :when (>= (last-log-index raft-state) next-index)
+                          :when (get log next-index)
+                          :let [prev (max 0 (dec next-index))
+                                prev-term (or (:term (get log prev)) 0)]]
+                      {:target node-id
+                       :type :append-entries
+                       :term current-term
+                       :leader-id id
+                       :prev-log-index prev
+                       :prev-log-term prev-term
+                       :entries (for [index (range next-index (inc (last-log-index raft-state)))]
+                                  (get log index))
+                       :from id
+                       :leader-commit commit-index}))
+         (publish (for [[node-id next-index] next-index
                         :when (>= (last-log-index raft-state) next-index)
                         :when (get log next-index)
                         [index entry] (sort-by first log)
@@ -741,12 +806,20 @@
 
 (def raft-rules
   "list of rules for raft"
-  [#'keep-up-commited
+  [(fn [{:as state
+         :keys [in-queue]
+         {:keys [current-term]} :raft-state}]
+     (when (and (:term (peek in-queue))
+                (> current-term (:term (peek in-queue))))
+       (-> state
+           (consume-message))))
+   #'keep-up-commited
    #'jump-to-new-term
+   #'receive-vote-success-become-leader
+   #'receive-vote-success-tally
    #'new-election-on-timeout
    #'respond-to-vote-request-success
    #'respond-to-vote-request-failure
-   #'receive-vote-success
    #'receive-vote-failure
    #'heart-beat
    #'follow-the-leader
@@ -767,7 +840,8 @@
    #'candidate-append-entries-response
    #'leader-ignore-old-leaders
    #'leader-drop-operations-that-are-in-log
-   #'become-leader])
+   ;; #'become-leader
+   ])
 
 (defn step
   "given a raft state, run the machine forward until no more progress
@@ -779,11 +853,31 @@
      (if-let [result (rule raft-state)]
        (do
          (assert (instance? PersistentQueue
-                            (:running-log raft-state)))
-         result)
+                            (:running-log result)))
+         (assert (or (not= :candidate (:node-type (:raft-state result)))
+                     (not (zero? (:votes (:raft-state result)))))
+                 rule)
+         (log-trace result (:id result) rule))
        raft-state))
    raft-state
    raft-rules))
+
+;; (defn step
+;;   "given a raft state, run the machine forward until no more progress
+;;   can be made, return the new state"
+;;   [raft-state]
+;;   (loop [[rule & rules] raft-rules]
+;;     (if (nil? rule)
+;;       (assert nil)
+;;       (if-let [result (rule raft-state)]
+;;         (do
+;;           (assert (instance? PersistentQueue
+;;                              (:running-log result)))
+;;           (assert (or (not= :candidate (:node-type (:raft-state result)))
+;;                       (not (zero? (:votes (:raft-state result)))))
+;;                   rule)
+;;           (log-trace result (:id result) rule (:current-term (:raft-state result))))
+;;         (recur rules)))))
 
 (defn run-one
   "given a state of raft and an input message, step the machine to a
@@ -814,7 +908,8 @@
                            (:current-term (:raft-state new-state)))
                 (not= (:commit-index (:raft-state state))
                       (:commit-index (:raft-state new-state)))
-                (log-trace (:id state) "changed commits from"
+                (log-trace (:node-type (:raft-state state))
+                           (:id state) "changed commits from"
                            (:commit-index (:raft-state state))
                            "to"
                            (:commit-index (:raft-state new-state)))
