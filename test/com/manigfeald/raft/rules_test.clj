@@ -2,35 +2,8 @@
   (:require [clojure.test :refer :all]
             [com.manigfeald.raft.rules :refer :all]
             [clojure.tools.logging :as log]
-            [com.manigfeald.raft.core :refer :all]))
-
-(in-ns 'clojure.test)
-
-(def original-test-var  test-var)
-
-(defn test-var [v]
-  (clojure.tools.logging/trace "testing" v)
-  (let [start (System/currentTimeMillis)
-        result (original-test-var v)]
-    (clojure.tools.logging/trace
-     "testing" v "took"
-     (/ (- (System/currentTimeMillis) start) 1000.0)
-     "seconds")
-    result))
-
-(def original-test-ns test-ns)
-
-(defn test-ns [ns]
-  (clojure.tools.logging/trace "testing namespace" ns)
-  (let [start (System/currentTimeMillis)
-        result (original-test-ns ns)]
-    (clojure.tools.logging/trace
-     "testing namespace" ns "took"
-     (/ (- (System/currentTimeMillis) start) 1000.0)
-     "seconds")
-    result))
-
-(in-ns 'com.manigfeald.raft.rules-test)
+            [com.manigfeald.raft.core :refer :all])
+  (:import (clojure.lang PersistentQueue)))
 
 (deftest t-keep-up-apply
   (is (= [false {:raft-state {:commit-index 0 :last-applied 0}}]
@@ -76,6 +49,7 @@
                           :next-timeout 8}
                   :io {:message nil
                        :out-queue [{:type :append-entries-response
+                                    :target ::bob
                                     :term 1
                                     :success? false
                                     :from ::me}]}
@@ -87,6 +61,7 @@
              :timer {:period 3
                      :now 5}
              :io {:message {:type :append-entries
+                            :leader-id ::bob
                             :term 0}}}))))
   (testing "entries not in log"
     (let [[matched? result] (follower-respond-to-append-entries
@@ -238,8 +213,10 @@
     (is applied? result)
     (is (= 3 (count messages)) messages)
     (is (= #{::a ::b ::c} (set (map :target messages))))
-    (doseq [{:keys [type target candidate-id from last-log-term last-log-index]}
+    (is (= 2 (:current-term (:raft-state result))))
+    (doseq [{:keys [type target candidate-id from last-log-term last-log-index term]}
             messages]
+      (is (= term 2))
       (is (= last-log-index 1))
       (is (= last-log-term 1))
       (is (= from ::me))
@@ -256,6 +233,7 @@
                                            :votes 2}
                               :timer {:now 10
                                       :period 3}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :request-vote-response
                                              :success? true}}})
           {{messages :in-queue} :io} result]
@@ -426,3 +404,38 @@
     (is applied? result)
     (is (= 2 (::a (:next-index (:raft-leader-state result)))))
     (is (= 1 (::a (:match-index (:raft-leader-state result)))))))
+
+(defmacro foo [exp & body]
+  (when-not (eval exp)
+    `(do ~@body)))
+
+(foo (resolve 'clojure.test/original-test-var)
+  (in-ns 'clojure.test)
+
+  (def original-test-var test-var)
+
+  (defn test-var [v]
+    (clojure.tools.logging/trace "testing" v)
+    (let [start (System/currentTimeMillis)
+          result (original-test-var v)]
+      (clojure.tools.logging/trace
+       "testing" v "took"
+       (/ (- (System/currentTimeMillis) start) 1000.0)
+       "seconds")
+      result))
+
+  (def original-test-ns test-ns)
+
+  (defn test-ns [ns]
+    (clojure.tools.logging/trace "testing namespace" ns)
+    (let [start (System/currentTimeMillis)
+          result (original-test-ns ns)]
+      (clojure.tools.logging/trace
+       "testing namespace" ns "took"
+       (/ (- (System/currentTimeMillis) start) 1000.0)
+       "seconds")
+      result))
+
+  (in-ns 'com.manigfeald.raft.rules-test))
+
+

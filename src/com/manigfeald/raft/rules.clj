@@ -1,13 +1,14 @@
 (ns com.manigfeald.raft.rules
   (:require [com.manigfeald.raft.core :refer :all]))
 
-(defn reject-append-entries [state current-term id]
+(defn reject-append-entries [state leader-id current-term id]
   (-> state
       (consume-message)
       (publish [{:type :append-entries-response
                  :term current-term
                  :success? false
-                 :from id}])
+                 :from id
+                 :target leader-id}])
       (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
                                           (-> state :timer :now)))))
 
@@ -15,6 +16,7 @@
   (-> state
       (consume-message)
       (publish [{:type :append-entries-response
+                 :target leader-id
                  :term current-term
                  :success? true
                  :from id
@@ -27,7 +29,8 @@
   clojure.lang.IFn
   (invoke [this arg]
     (if (head arg)
-      [true (body arg)]
+      (let [r (body arg)]
+        [true r])
       [false arg])))
 
 (defrecord CompoundRule [head subrules]
@@ -46,10 +49,13 @@
   "a rule is a combination of some way to decide if the rule
   applies (the head) and some way to apply the rule (the body)"
   ([head body bindings]
-     `(->Rule (fn [~bindings]
-                ~head)
-              (fn [~bindings]
-                ~body)))
+     (if (:line (meta head))
+       `(rule ~(str "line-" (:line (meta head)))
+              ~head ~body ~bindings)
+       `(->Rule (fn [~bindings]
+                  ~head)
+                (fn [~bindings]
+                  ~body))))
   ([name head body bindings]
      `(assoc (->Rule (fn ~(symbol (str (clojure.core/name name) "-head")) [~bindings]
                        ~head)
@@ -76,13 +82,16 @@
 
 (def jump-to-newer-term
   (rule
-   (> message-term current-term)
+   (and message-term
+        (> message-term current-term))
    (-> state
+       (log-trace "jump-to-newer-term")
        (update-in [:raft-state] merge {:node-type :follower
                                        :current-term message-term
                                        :votes 0
                                        :voted-for nil}))
    {:as state
+    :keys [id]
     {{message-term :term} :message} :io
     {:keys [current-term]} :raft-state}))
 ;;
@@ -91,10 +100,11 @@
   (rule
    :fail-old-term
    (> current-term message-term)
-   (reject-append-entries state current-term id)
+   (reject-append-entries state leader-id current-term id)
    {:as state
     :keys [id]
-    {{message-term :term} :message} :io
+    {{leader-id :leader-id
+      message-term :term} :message} :io
     {:keys [current-term node-type]} :raft-state}))
 
 (def follower-respond-to-append-entries-with-unknown-prev
@@ -102,11 +112,12 @@
    :fail-missing-prevs
    (and (= current-term message-term)
         (not (log-contains? raft-state prev-log-term prev-log-index)))
-   (reject-append-entries state current-term id)
+   (reject-append-entries state leader-id current-term id)
    {:as state
     :keys [id]
     {{prev-log-index :prev-log-index
       prev-log-term :prev-log-term
+      leader-id :leader-id
       message-term :term} :message} :io
     {:keys [current-term node-type] :as raft-state} :raft-state}))
 
@@ -141,6 +152,7 @@
              (nil? voted-for))
          (log-contains? raft-state last-log-term last-log-index))
     (-> state
+        (log-trace "votes for" candidate-id "in" current-term)
         (consume-message)
         (publish [{:type :request-vote-response
                    :target candidate-id
@@ -179,11 +191,13 @@
    (and (= node-type :follower)
         (>= now next-timeout))
    (-> state
+       (log-trace "call for election")
        (consume-message)
        (update-in [:raft-state] merge
                   {:node-type :candidate
-                   :votes 0
-                   :voted-for nil})
+                   :votes 1
+                   :voted-for id
+                   :current-term (inc current-term)})
        (assoc-in [:timer :next-timeout]
                  (+ now period))
        (publish (broadcast
@@ -192,7 +206,7 @@
                   :candidate-id id
                   :last-log-index (last-log-index raft-state)
                   :last-log-term (last-log-term raft-state)
-                  :term current-term
+                  :term (inc current-term)
                   :from id})))
    {:as state
     :keys [id]
@@ -208,20 +222,36 @@
    (rule
     (enough-votes? (count node-set) (inc votes))
     (-> state
+        (log-trace "received vote from" from "in" current-term)
+        (log-trace "becoming leader with" (inc votes) "in" current-term)
         (update-in [:raft-state] merge {:node-type :leader
                                         :votes 0
-                                        :voted-for nil})
-        (assoc-in [:timer :next-timeout] (+ now period)))
+                                        :voted-for nil
+                                        :leader-id id})
+        (assoc-in [:timer :next-timeout] (+ now period))
+        (publish (broadcast node-set
+                            {:type :append-entries
+                             :term current-term
+                             :leader-id id
+                             :prev-log-index (last-log-index raft-state)
+                             :prev-log-term (last-log-term raft-state)
+                             :entries []
+                             :leader-commit commit-index
+                             :from id})))
     {:as state
-     {{:keys [success?]} :message} :io
+     :keys [id]
+     {{:keys [success? from]} :message} :io
      {:keys [now period]} :timer
-     {:keys [votes node-set]} :raft-state})
+     {:keys [votes node-set current-term commit-index] :as raft-state} :raft-state})
    (rule
     (not (enough-votes? (count node-set) (inc votes)))
     (-> state
+        (log-trace "received vote from" from "in" current-term)
         (update-in [:raft-state :votes] inc))
     {:as state
-     {:keys [votes node-set]} :raft-state})
+     :keys [id]
+     {{:keys [from]} :message} :io
+     {:keys [votes node-set current-term]} :raft-state})
    {{{:keys [success?]
       message-type :type} :message} :io
       {:keys [node-type]} :raft-state}))
@@ -231,9 +261,9 @@
    (and (= node-type :candidate)
         (= message-type :append-entries))
    (-> state
+       (log-trace "candidate-respond-to-append-entries")
        (consume-message)
        (update-in [:raft-state] merge {:node-type :follower
-                                       :voted-for nil
                                        :votes 0})
        (assoc-in [:timer :next-timeout] (+ period now)))
    {:as state
@@ -246,11 +276,12 @@
    (and (= node-type :candidate)
         (>= now next-timeout))
    (-> state
+       (log-trace "candidate-election-timeout")
        (consume-message)
        (update-in [:raft-state] merge
                   {:node-type :candidate
-                   :votes 0
-                   :voted-for nil
+                   :votes 1
+                   :voted-for id
                    :current-term (inc current-term)})
        (assoc-in [:timer :next-timeout]
                  (+ now period))

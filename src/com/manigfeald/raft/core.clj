@@ -1,4 +1,5 @@
-(ns com.manigfeald.raft.core)
+(ns com.manigfeald.raft.core
+  (:import (clojure.lang PersistentQueue)))
 
 (defprotocol RaftOperations
   "The value that you want raft to maintain implements this protocol"
@@ -91,3 +92,14 @@
                                           n))
                      :when (>= c (inc (Math/floor (/ (count node-set) 2.0))))]
                  n))))
+
+(defn log-trace
+  "given a state and a log message (as a seq of strings) append the
+  message to the log at the trace level"
+  [state & message]
+  {:pre [(instance? PersistentQueue (:running-log state))]
+   :post [(instance? PersistentQueue (:running-log %))]}
+  (update-in state [:running-log]
+             (fnil conj PersistentQueue/EMPTY)
+             {:level :trace
+              :message (apply print-str (:id state) message)}))
