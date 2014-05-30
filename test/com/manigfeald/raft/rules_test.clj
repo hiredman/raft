@@ -5,40 +5,45 @@
             [com.manigfeald.raft.core :refer :all])
   (:import (clojure.lang PersistentQueue)))
 
+;; TODO: these tests really suck
+
 (deftest t-keep-up-apply
   (is (= [false {:raft-state {:commit-index 0 :last-applied 0}}]
          (keep-up-apply {:raft-state {:commit-index 0 :last-applied 0}})))
   (is (= [true {:raft-state {:commit-index 1
                              :last-applied 1
-                             :log {1 {:operation-type :write
+                             :log {1 {:payload {:op :write
+                                                :key :foo
+                                                :value :bar}
                                       :index 1
-                                      :op :write
-                                      :key :foo
-                                      :value :bar}}
+                                      :return nil}}
                              :value (assoc (->MapValue)
                                       :foo :bar)}}]
          (keep-up-apply {:raft-state {:commit-index 1
                                       :last-applied 0
-                                      :log {1 {:operation-type :write
-                                               :index 1
-                                               :op :write
-                                               :key :foo
-                                               :value :bar}}
+                                      :log {1 {:payload {:op :write
+                                                         :key :foo
+                                                         :value :bar}
+                                               :index 1}}
                                       :value (->MapValue)}}))))
 
 (deftest t-jump-to-newer-term
   (is (= [false {:io {:message {:term 1}}
+                 :running-log PersistentQueue/EMPTY
                  :raft-state {:current-term 1}}]
          (jump-to-newer-term {:io {:message {:term 1}}
+                              :running-log PersistentQueue/EMPTY
                               :raft-state {:current-term 1}})))
   (is (= [true {:io {:message {:term 2}}
                 :raft-state {:current-term 2
                              :node-type :follower
                              :votes 0
                              :voted-for nil}}]
-         (jump-to-newer-term {:io {:message {:term 2}}
-                              :raft-state {:current-term 1
-                                           :node-type :candidate-id}}))))
+         (update-in (jump-to-newer-term {:io {:message {:term 2}}
+                                         :running-log PersistentQueue/EMPTY
+                                         :raft-state {:current-term 1
+                                                      :node-type :candidate-id}})
+                    [1] dissoc :running-log))))
 
 (deftest t-follower-respond-to-append-entries
   (testing "failing old term"
@@ -115,6 +120,7 @@
                                            :voted-for nil}
                               :timer {:period 3
                                       :now 5}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :request-vote
                                              :term 1
                                              :candidate-id ::bob
@@ -137,6 +143,7 @@
                                            :log {1 {:term 1}}}
                               :timer {:period 3
                                       :now 5}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :request-vote
                                              :term 1
                                              :candidate-id ::bob
@@ -159,6 +166,7 @@
                                            :log {}}
                               :timer {:period 3
                                       :now 5}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :request-vote
                                              :term 1
                                              :candidate-id ::bob
@@ -181,6 +189,7 @@
                                            :log {}}
                               :timer {:period 3
                                       :now 5}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :request-vote
                                              :term 1
                                              :candidate-id ::bob
@@ -204,6 +213,7 @@
                                          :node-set #{::a ::b ::c}
                                          :log {1 {:index 1
                                                   :term 1}}}
+                            :running-log PersistentQueue/EMPTY
                             :timer {:period 3
                                     :next-timeout 3
                                     :now 5}
@@ -247,6 +257,7 @@
                                            :current-term 1
                                            :node-set #{1 2 3 4 5}
                                            :votes 1}
+                              :running-log PersistentQueue/EMPTY
                               :timer {:now 10
                                       :period 3}
                               :io {:message {:type :request-vote-response
@@ -262,6 +273,7 @@
                                            :current-term 1
                                            :node-set #{1 2 3 4 5}
                                            :votes 1}
+                              :running-log PersistentQueue/EMPTY
                               :timer {:now 10
                                       :period 3}
                               :io {:message {:type :request-vote-response
@@ -278,6 +290,7 @@
                                          :votes 2}
                             :timer {:now 10
                                     :period 3}
+                            :running-log PersistentQueue/EMPTY
                             :io {:message {:type :append-entries
                                            :term 1
                                            :leader-id ::bob
@@ -296,6 +309,7 @@
                             :raft-state {:node-type :candidate
                                          :current-term 1
                                          :node-set #{::a ::b ::c}}
+                            :running-log PersistentQueue/EMPTY
                             :timer {:now 10
                                     :next-timeout 9
                                     :period 3}
@@ -405,37 +419,62 @@
     (is (= 2 (::a (:next-index (:raft-leader-state result)))))
     (is (= 1 (::a (:match-index (:raft-leader-state result)))))))
 
+(deftest t-leader-receive-command
+  (let [[applied? result]
+        (leader-receive-command
+         {:io {:message {:type :operation,
+                         :payload {:op :write,
+                                   :key :hello,
+                                   :value :world},
+                         :operation-type :com.manigfeald.raft-test/bogon,
+                         :serial #uuid "73315024-7517-4506-8428-275a8d1a6d84"},
+               :out-queue PersistentQueue/EMPTY},
+          :raft-state {:current-term 2N,
+                       :voted-for 1,
+                       :log {},
+                       :commit-index 0N,
+                       :last-applied 0N,
+                       :node-type :leader,
+                       :value #com.manigfeald.raft.core.MapValue{},
+                       :votes 0, :leader-id 1, :node-set #{0 1 4 3 2}},
+          :raft-leader-state {:next-index {},
+                              :match-index {}},
+          :id 2,
+          :running-log PersistentQueue/EMPTY,
+          :timer {:now 1401418884457, :next-timeout 1401418884545, :period 1005},
+          :run-count 16530N})]
+    (is applied?)
+    (is (contains? (:log (:raft-state result)) 1N))))
+
 (defmacro foo [exp & body]
   (when-not (eval exp)
     `(do ~@body)))
 
 (foo (resolve 'clojure.test/original-test-var)
-  (in-ns 'clojure.test)
+     (in-ns 'clojure.test)
 
-  (def original-test-var test-var)
+     (def original-test-var test-var)
 
-  (defn test-var [v]
-    (clojure.tools.logging/trace "testing" v)
-    (let [start (System/currentTimeMillis)
-          result (original-test-var v)]
-      (clojure.tools.logging/trace
-       "testing" v "took"
-       (/ (- (System/currentTimeMillis) start) 1000.0)
-       "seconds")
-      result))
+     (defn test-var [v]
+       (clojure.tools.logging/trace "testing" v)
+       (let [start (System/currentTimeMillis)
+             result (original-test-var v)]
+         (clojure.tools.logging/trace
+          "testing" v "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
 
-  (def original-test-ns test-ns)
+     (def original-test-ns test-ns)
 
-  (defn test-ns [ns]
-    (clojure.tools.logging/trace "testing namespace" ns)
-    (let [start (System/currentTimeMillis)
-          result (original-test-ns ns)]
-      (clojure.tools.logging/trace
-       "testing namespace" ns "took"
-       (/ (- (System/currentTimeMillis) start) 1000.0)
-       "seconds")
-      result))
+     (defn test-ns [ns]
+       (clojure.tools.logging/trace "testing namespace" ns)
+       (let [start (System/currentTimeMillis)
+             result (original-test-ns ns)]
+         (clojure.tools.logging/trace
+          "testing namespace" ns "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
 
-  (in-ns 'com.manigfeald.raft.rules-test))
-
-
+     (in-ns 'com.manigfeald.raft.rules-test))

@@ -30,7 +30,7 @@
   (invoke [this arg]
     (if (head arg)
       (let [r (body arg)]
-        [true r])
+        [true (update-in r [:applied-rules] conj this)])
       [false arg])))
 
 (defrecord CompoundRule [head subrules]
@@ -76,7 +76,9 @@
   (rule
    (> commit-index last-applied)
    (-> state
-       (update-in [:raft-state] advance-applied-to-commit))
+       (update-in [:raft-state] advance-applied-to-commit)
+       #_(as-> state
+             (log-trace state (:value (:raft-state state)))))
    {:as state
     {:keys [commit-index last-applied]} :raft-state}))
 
@@ -88,6 +90,7 @@
        (log-trace "jump-to-newer-term")
        (update-in [:raft-state] merge {:node-type :follower
                                        :current-term message-term
+                                       :leader-id nil
                                        :votes 0
                                        :voted-for nil}))
    {:as state
@@ -100,7 +103,9 @@
   (rule
    :fail-old-term
    (> current-term message-term)
-   (reject-append-entries state leader-id current-term id)
+   (-> state
+       (reject-append-entries leader-id current-term id)
+       (log-trace "rejecting append entries from" leader-id))
    {:as state
     :keys [id]
     {{leader-id :leader-id
@@ -112,7 +117,9 @@
    :fail-missing-prevs
    (and (= current-term message-term)
         (not (log-contains? raft-state prev-log-term prev-log-index)))
-   (reject-append-entries state leader-id current-term id)
+   (-> state
+       (log-trace "rejecting append entries from" leader-id)
+       (reject-append-entries leader-id current-term id))
    {:as state
     :keys [id]
     {{prev-log-index :prev-log-index
@@ -120,6 +127,7 @@
       leader-id :leader-id
       message-term :term} :message} :io
     {:keys [current-term node-type] :as raft-state} :raft-state}))
+
 
 (def follower-respond-to-append-entries
   (guard
@@ -131,16 +139,29 @@
     :good
     (and (= message-term current-term)
          (log-contains? raft-state prev-log-term prev-log-index))
-    (accept-append-entries state leader-id current-term id)
+    (-> state
+        ;; (cond->
+        ;;  (> (count entries) 0)
+        ;;  (log-trace "accepted" (count entries) "entries" entries))
+        (update-in [:raft-state :log] into (for [entry entries]
+                                             [(:index entry) entry]))
+        (accept-append-entries leader-id current-term id)
+        (as-> n
+              (assoc-in n [:raft-state :commit-index]
+                        (min leader-commit
+                             (last-log-index (:raft-state n))))))
     {:as state
      :keys [id]
      {{prev-log-index :prev-log-index
        prev-log-term :prev-log-term
        message-term :term
-       leader-id :leader-id} :message} :io
+       entries :entries
+       leader-id :leader-id
+       leader-commit :leader-commit} :message} :io
      {:keys [current-term node-type] :as raft-state} :raft-state})
-   {{{message-type :type} :message} :io
-    {:keys [node-type]} :raft-state}))
+   {{{message-type :type
+      :as message} :message} :io
+      {:keys [node-type]} :raft-state}))
 
 (def follower-respond-to-request-vote
   (guard
@@ -154,6 +175,7 @@
     (-> state
         (log-trace "votes for" candidate-id "in" current-term)
         (consume-message)
+        (assoc-in [:raft-state :voted-for] candidate-id)
         (publish [{:type :request-vote-response
                    :target candidate-id
                    :term current-term
@@ -170,6 +192,7 @@
              (not (nil? voted-for)))
         (not (log-contains? raft-state last-log-term last-log-index)))
     (-> state
+        (log-trace "doesn't vote for" candidate-id "in" current-term)
         (consume-message)
         (publish [{:type :request-vote-response
                    :target candidate-id
@@ -197,9 +220,11 @@
                   {:node-type :candidate
                    :votes 1
                    :voted-for id
-                   :current-term (inc current-term)})
+                   :current-term (inc current-term)
+                   :leader-id nil})
        (assoc-in [:timer :next-timeout]
                  (+ now period))
+       (update-in [:io :out-queue] empty)
        (publish (broadcast
                  node-set
                  {:type :request-vote
@@ -222,13 +247,22 @@
    (rule
     (enough-votes? (count node-set) (inc votes))
     (-> state
+        (consume-message)
         (log-trace "received vote from" from "in" current-term)
         (log-trace "becoming leader with" (inc votes) "in" current-term)
         (update-in [:raft-state] merge {:node-type :leader
                                         :votes 0
                                         :voted-for nil
                                         :leader-id id})
+        (update-in [:raft-leader-state] merge {:match-index (into {} (for [node node-set]
+                                                                       [node 0]))
+                                               :next-index (into {} (for [node node-set]
+                                                                       [node (inc (last-log-index raft-state))]))})
         (assoc-in [:timer :next-timeout] (+ now period))
+        (assoc-in [:raft-state :log] (into {} (for [[index entry] (:log (:raft-state state))]
+                                                (if (> index commit-index)
+                                                  [index (assoc entry :term current-term)]
+                                                  [index entry]))))
         (publish (broadcast node-set
                             {:type :append-entries
                              :term current-term
@@ -246,6 +280,7 @@
    (rule
     (not (enough-votes? (count node-set) (inc votes)))
     (-> state
+        (consume-message)
         (log-trace "received vote from" from "in" current-term)
         (update-in [:raft-state :votes] inc))
     {:as state
@@ -264,10 +299,12 @@
        (log-trace "candidate-respond-to-append-entries")
        (consume-message)
        (update-in [:raft-state] merge {:node-type :follower
+                                       :voted-for leader-id
                                        :votes 0})
        (assoc-in [:timer :next-timeout] (+ period now)))
    {:as state
-    {{message-type :type} :message} :io
+    {{message-type :type
+      leader-id :leader-id} :message} :io
     {:keys [node-type]} :raft-state
     {:keys [period now]} :timer}))
 
@@ -303,7 +340,6 @@
    (and (= node-type :leader)
         (>= now next-timeout))
    (-> state
-       (consume-message)
        (publish (broadcast node-set
                            {:type :append-entries
                             :term current-term
@@ -321,17 +357,31 @@
 
 (def leader-receive-command
   (rule
-   false
-   state
-   state))
+   (and (= node-type :leader)
+        (= message-type :operation))
+   (-> state
+       (log-trace "received command serial" (:serial message))
+       ;; (log-trace (:raft-leader-state state))
+       ;; (log-trace "commit-index" commit-index)
+       (consume-message)
+       (update-in [:raft-state] add-to-log (assoc message
+                                             :term current-term)))
+   {:as state
+    {{:as message message-type :type} :message} :io
+    {:keys [match-index]} :raft-leader-state
+    {:keys [current-term node-type commit-index node-set] :as raft-state} :raft-state}))
 
+(require 'clojure.tools.logging)
+
+;; TODO: rate limit this rule
 (def update-followers
   (rule
-   (seq (for [[node next-index] next-index
-              :when (not= node id)
-              :when (>= (last-log-index raft-state) next-index)]
-          node))
+   (and (= :leader node-type)
+        (seq (for [[node next-index] next-index
+                   :when (>= (last-log-index raft-state) next-index)]
+               node)))
    (-> state
+       ;; (log-trace "update followers")
        (publish (for [[node next-index] next-index
                       :when (not= node id)
                       :when (>= (last-log-index raft-state) next-index)]
@@ -352,19 +402,21 @@
    {:as state
     :keys [id]
     {:keys [next-index]} :raft-leader-state
+    {:keys [now next-timeout period]} :timer
     {:as raft-state
-     :keys [commit-index current-term]} :raft-state}))
+     :keys [commit-index current-term node-type]} :raft-state}))
 
 (def update-commit
   (rule
-   (possible-new-commit commit-index raft-state match-index node-set current-term)
+   (and (= :leader node-type)
+        (possible-new-commit commit-index raft-state match-index node-set current-term))
    (-> state
        (assoc-in [:raft-state :commit-index]
                  (possible-new-commit
                   commit-index raft-state match-index node-set current-term)))
    {:as state
     {:keys [match-index]} :raft-leader-state
-    {:keys [commit-index node-set current-term] :as raft-state} :raft-state}))
+    {:keys [commit-index node-set current-term node-type] :as raft-state} :raft-state}))
 
 (def leader-handle-append-entries-response
   (guard
@@ -373,6 +425,7 @@
    (rule
     (not success?)
     (-> state
+        (consume-message)
         (update-in [:raft-leader-state :next-index from] dec)
         (update-in [:raft-leader-state :next-index from] max 0))
     {:as state
@@ -380,6 +433,7 @@
    (rule
     success?
     (-> state
+        (consume-message)
         (assoc-in [:raft-leader-state :next-index from] (inc last-log-index))
         (assoc-in [:raft-leader-state :match-index from] last-log-index))
     {:as state
@@ -388,9 +442,20 @@
     {{message-type :type} :message} :io
     {:keys [node-type]} :raft-state}))
 
+(def ignore-messages-from-old-terms
+  (rule
+   (and message-term
+        (> current-term message-term))
+   (-> state
+       (consume-message))
+   {:as state
+    {{message-term :term} :message} :io
+    {:keys [current-term]} :raft-state}))
+
 (def rules-of-raft
   (guard
    true
+   #'ignore-messages-from-old-terms
    #'keep-up-apply
    #'jump-to-newer-term
    #'follower-respond-to-append-entries

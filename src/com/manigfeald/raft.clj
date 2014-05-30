@@ -29,23 +29,44 @@
    timer))
 
 (defn run-one [raft-state]
-  (as-> (second (rules-of-raft raft-state)) new-state
-        (cond-> new-state
-                (not= (:node-type (:raft-state new-state))
-                      (:node-type (:raft-state raft-state)))
-                (log-trace
-                 (:node-type (:raft-state raft-state))
-                 "=>"
-                 (:node-type (:raft-state new-state))
-                 (:run-count new-state))
-                (not= (:votes (:raft-state new-state))
-                      (:votes (:raft-state raft-state)))
-                (log-trace "votes"
-                           (:votes (:raft-state new-state))
-                           (:run-count new-state))
-                (not= (:current-term (:raft-state new-state))
-                      (:current-term (:raft-state raft-state)))
-                (log-trace "current-term"
-                           (:current-term (:raft-state new-state))
-                           (:run-count new-state)))
-        (update-in new-state [:run-count] (fnil inc 0N))))
+  {:post [(not (seq (for [message (:out-queue (:io %))
+                          :when (= (:type message) :request-vote-response)
+                          :when (:success? message)
+                          :when (not= (:voted-for (:raft-state %)) (:target message))]
+                      message)))
+          (>= (count (:log (:raft-state %)))
+              (count (:log (:raft-state raft-state))))]}
+  (let [[applied? new-state] (rules-of-raft raft-state)
+        r (as-> new-state new-state
+                (cond-> new-state
+                        (not= (:node-type (:raft-state new-state))
+                              (:node-type (:raft-state raft-state)))
+                        (log-trace
+                         (:node-type (:raft-state raft-state))
+                         "=>"
+                         (:node-type (:raft-state new-state))
+                         (:run-count new-state))
+                        ;; (not= (:votes (:raft-state new-state))
+                        ;;       (:votes (:raft-state raft-state)))
+                        ;; (log-trace "votes"
+                        ;;            (:votes (:raft-state new-state))
+                        ;;            (:run-count new-state))
+                        (not= (:current-term (:raft-state new-state))
+                              (:current-term (:raft-state raft-state)))
+                        (log-trace "current-term"
+                                   (:current-term (:raft-state new-state))
+                                   (:run-count new-state))
+                        (not= (:commit-index (:raft-state new-state))
+                              (:commit-index (:raft-state raft-state)))
+                        (log-trace "commit index"
+                                   (:commit-index (:raft-state new-state))
+                                   (:run-count new-state)))
+                (update-in new-state [:run-count] (fnil inc 0N)))]
+    (assert (not (seq (for [message (:out-queue (:io r))
+                            :when (= (:type message) :request-vote-response)
+                            :when (:success? message)
+                            :when (not= (:voted-for (:raft-state r)) (:target message))]
+                        message)))
+            (pr-str
+             (update-in r [:io :out-queue] seq)))
+    r))

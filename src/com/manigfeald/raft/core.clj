@@ -3,28 +3,23 @@
 
 (defprotocol RaftOperations
   "The value that you want raft to maintain implements this protocol"
-  (apply-read [value read-operation]
-    "part of the API protocol, given a value and a read-operation,
-    return the value that would be read")
-  (apply-write [value write-operation]
-    "part of the API protocol, given a write-operation returns an
-    updated value with that write operation applied"))
+  (apply-operation [value operation]))
 
 (defrecord MapValue []
   RaftOperations
-  (apply-read [value operation]
+  (apply-operation [value operation]
     (case (:op operation)
-      :read (get value (:key operation))))
-  (apply-write [value operation]
-    (case (:op operation)
-      :write (assoc value
-               (:key operation) (:value operation))
-      :write-if (if (contains? value (:key operation))
-                  value
-                  (assoc value
-                    (:key operation) (:value operation)))
-      :delete (dissoc value (:key operation)))))
+      :read [(get value (:key operation)) value]
+      :write [nil (assoc value
+                    (:key operation) (:value operation))]
+      :write-if [nil (if (contains? value (:key operation))
+                       value
+                       (assoc value
+                         (:key operation) (:value operation)))]
+      :delete [nil (dissoc value (:key operation))]
+      (assert nil operation))))
 
+;; TODO: move add and remove node in to its own code
 (defn advance-applied-to-commit
   "given a RaftState, ensure all commited operations have been applied
   to the value"
@@ -35,20 +30,17 @@
           op (get (:log raft-state) new-last)]
       (assert op "op is in the log")
       (case (:operation-type op)
-        :read (let [read-value (apply-read (:value raft-state) op)
-                    new-state (assoc-in raft-state [:log (:index op) :value]
-                                        read-value)]
-                (recur (assoc new-state
-                         :last-applied new-last)))
-        :write (recur (assoc raft-state
-                        :last-applied new-last
-                        :value (apply-write (:value raft-state) op)))
         :add-node (recur (-> raft-state
                              (assoc :last-applied new-last)
                              (update-in [:node-set] conj (:node op))))
         :remove-node (recur (-> raft-state
                                 (assoc :last-applied new-last)
-                                (update-in [:node-set] disj (:node op))))))
+                                (update-in [:node-set] disj (:node op))))
+        (let [[return new-value] (apply-operation (:value raft-state) (:payload op))
+              new-state (assoc-in raft-state [:log (:index op) :return] return)]
+          (recur (assoc new-state
+                   :value new-value
+                   :last-applied new-last)))))
     raft-state))
 
 (defn consume-message [state]
@@ -69,13 +61,16 @@
            (= log-term (:term (get (:log raft-state) log-index))))))
 
 (defn last-log-index [raft-state]
-  (apply max 0 (keys (:log raft-state))))
+  (apply max 0N (keys (:log raft-state))))
 
 (defn last-log-term [raft-state]
-  (let [idx (last-log-index raft-state)]
-    (if (zero? idx)
-      0
-      (:term (get (:log raft-state) idx)))))
+  {:post [(number? %)
+          (not (neg? %))]}
+  (biginteger
+   (let [idx (last-log-index raft-state)]
+     (if (zero? idx)
+       0N
+       (:term (get (:log raft-state) idx))))))
 
 (defn broadcast [node-set msg]
   (for [node node-set]
@@ -85,12 +80,13 @@
   (>= votes (inc (Math/floor (/ total 2.0)))))
 
 (defn possible-new-commit [commit-index raft-state match-index node-set current-term]
-  (first (sort (for [[n c] (frequencies (for [n (range commit-index (inc (last-log-index raft-state)))
+  (first (sort (for [[n c] (frequencies (for [[index entry] (:log raft-state)
                                               [node match-index] match-index
-                                              :when (>= match-index n)
-                                              :when (= current-term (or (:term (get (:log raft-state) n)) 0))]
-                                          n))
-                     :when (>= c (inc (Math/floor (/ (count node-set) 2.0))))]
+                                              :when (>= match-index index)
+                                              :when (= current-term (:term entry))
+                                              :when (> index commit-index)]
+                                          index))
+                     :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
                  n))))
 
 (defn log-trace
@@ -103,3 +99,22 @@
              (fnil conj PersistentQueue/EMPTY)
              {:level :trace
               :message (apply print-str (:id state) message)}))
+
+(defn serial-exists? [raft-state serial]
+  (first (for [[_ entry] (:log raft-state)
+               :when (= (:serial entry) serial)]
+           entry)))
+
+(defn add-to-log [raft-state operation]
+  {:pre [(contains? operation :operation-type)
+         (contains? operation :payload)
+         (contains? operation :term)
+         (number? (:term operation))
+         (not (neg? (:term operation)))]
+   :post [(= 1 (count (for [[_ entry] (:log %)
+                            :when (= (:serial entry) (:serial operation))]
+                        entry)))]}
+  (if (serial-exists? raft-state (:serial operation))
+    raft-state
+    (assoc-in raft-state [:log (inc (last-log-index raft-state))]
+              (assoc operation :index (inc (last-log-index raft-state))))))

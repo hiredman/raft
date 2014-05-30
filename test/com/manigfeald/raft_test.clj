@@ -5,7 +5,8 @@
                                         sliding-buffer dropping-buffer
                                         close!]]
             [clojure.tools.logging :as log]
-            [clojure.pprint :as pp]))
+            [clojure.pprint :as pp]
+            [robert.bruce :refer [try-try-again]]))
 
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
@@ -31,45 +32,6 @@
 (defn shut-it-down! [nodes]
   (doseq [i nodes]
     (future-cancel (:future i))))
-
-
-
-;; ;; (deftest test-operations
-;; ;;   (log/trace 1)
-;; ;;   (let [leader (chan (dropping-buffer 10))
-;; ;;         [leaders nodes commited value] (f 5 leader)]
-;; ;;     (try
-;; ;;       (log/trace 2)
-;; ;;       (testing "elect leader"
-;; ;;         (is (stable-leader? nodes 5)))
-;; ;;       (log/trace 3)
-;; ;;       (let [[leader] (leaders-of nodes 5)
-;; ;;             c (chan 2)]
-;; ;;         (log/trace 4)
-;; ;;         (doseq [node nodes
-;; ;;                 :when (= leader (:id node))]
-;; ;;           (log/trace 5)
-;; ;;           (>!! (:in node) {:type :operation
-;; ;;                            :op :write
-;; ;;                            :key "hello"
-;; ;;                            :value "world"
-;; ;;                            :operation-type :write
-;; ;;                            :serial 1})
-;; ;;           (log/trace 6)
-;; ;;           (>!! (:in node) {:type :await
-;; ;;                            :serial 1
-;; ;;                            :callback (fn [e]
-;; ;;                                        (close! c))}))
-;; ;;         (log/trace 7)
-;; ;;         (is (not= :timeout (v c (* 60 1000) :timeout))))
-;; ;;       (Thread/sleep 10000)
-;; ;;       (doseq [[node commited-entries] @commited]
-;; ;;         (is (contains? commited-entries 1)))
-;; ;;       (is (apply = (vals @value)))
-;; ;;       (doseq [[node value] @value]
-;; ;;         (is (= (get value "hello") "world")))
-;; ;;       (finally
-;; ;;         (shut-it-down! nodes)))))
 
 ;; ;; (deftest test-read-operations
 ;; ;;   (let [leader (chan (dropping-buffer 2))
@@ -130,22 +92,27 @@
 (defn raft-obj [in id cluster]
   (let [s (atom nil)
         lock (java.util.concurrent.Semaphore. 1)
+        commands (chan)
         f (future
             (try
               (loop [state (raft id (conj (set (list-nodes cluster)) id)
                                  (->Timer (System/currentTimeMillis)
                                           (System/currentTimeMillis)
-                                          3000))]
+                                          1500))]
                 (let [state (cond-> state
                                     (= :leader (:node-type (:raft-state state)))
-                                    (assoc-in [:timer :period] 1000)
+                                    (assoc-in [:timer :period] 300)
                                     (not= :leader (:node-type (:raft-state state)))
                                     (assoc-in [:timer :period]
-                                              (+ 1500 (rand-int 1500))))
+                                              (+ 500 (rand-int 1000))))
                       message (alt!!
+                               commands
+                               ([message] message)
                                in
                                ([message] message)
-                               :default nil)]
+                               ;; (timeout 100) ([_] nil)
+                               :default nil
+                               :priority true)]
                   (let [_ (.acquire lock)
                         new-state (try
                                     (-> state
@@ -155,6 +122,8 @@
                                         (run-one))
                                     (finally
                                       (.release lock)))
+                        ;; _ (when (= :operation (:type message))
+                        ;;     (log/trace (:applied-rules new-state)))
                         _ (doseq [msg (:out-queue (:io new-state))]
                             (assert (not= :broadcast (:target msg)))
                             (send-to cluster (:target msg) msg))
@@ -163,7 +132,8 @@
                             (case level
                               :trace (log/trace message)))
                         new-state (update-in new-state [:io :out-queue] empty)
-                        new-state (update-in new-state [:running-log] empty)]
+                        new-state (update-in new-state [:running-log] empty)
+                        new-state (update-in new-state [:applied-rules] empty)]
                     (reset! s new-state)
                     (if (:stopped? new-state)
                       new-state
@@ -175,24 +145,9 @@
      :cluster cluster
      :raft s
      :lock lock
+     :commands commands
      :future f}))
 
-;; (defn await-applied [nodes serial-w i dunno]
-;;   (loop [i i]
-;;     (if (zero? i)
-;;       dunno
-;;       (if-let [v (seq (for [node nodes
-;;                             :let [{:keys [raft]} node
-;;                                   v (deref raft)
-;;                                   {{:keys [last-applied log]} :raft-state} v]
-;;                             [_ {:keys [index serial value]}] log
-;;                             :when (= serial serial-w)
-;;                             :when (>= last-applied index)]
-;;                         value))]
-;;         (first v)
-;;         (do
-;;           (Thread/sleep 100)
-;;           (recur (dec i)))))))
 
 (defn stable-leader? [nodes n]
   (loop [i 100]
@@ -216,19 +171,67 @@
           lead
           (recur (dec i)))))))
 
-;; (defn raft-write [nodes key value]
-;;   (loop [id (java.util.UUID/randomUUID)
-;;          leader (stable-leader?* nodes 1)]
-;;     (log/trace "raft-write")
-;;     (>!! (:in leader) {:type :operation
-;;                        :op :write
-;;                        :key key
-;;                        :value value
-;;                        :operation-type :write
-;;                        :serial id})
-;;     (when (= :dunno (await-applied nodes id 10 :dunno))
-;;       (log/trace leader)
-;;       (recur id (stable-leader?* nodes 1)))))
+(defn await-applied [nodes serial-w dunno]
+  (try
+    (try-try-again
+     {:decay :exponential
+      :sleep 100
+      :tries 6}
+     (fn []
+       (log/trace "await-applied body")
+       (let [r (for [node nodes
+                     :let [{:keys [raft]} node v (deref raft)
+                           {{:keys [last-applied log]} :raft-state} v]
+                     [_ {:keys [index serial return]}] log
+                     :when (= serial serial-w)
+                     :when (>= last-applied index)]
+                 return)]
+         (if (= (count nodes) (count r))
+           (first r)
+           (throw (Exception.))))))
+    (catch Exception _
+      dunno)))
+
+;; TODO: may not be required
+(defn await-n-applied [nodes n]
+  (let [leader (stable-leader? nodes 1)
+        leader-commit (-> leader :raft deref :raft-state :commit-index)]
+    (loop [i 100]
+      (Thread/sleep 1000)
+      (if (zero? i)
+        false
+        (let [lead (for [node nodes
+                         :let [{:keys [raft]} node
+                               v (deref raft)
+                               {{:keys [commit-index]} :raft-state} v]
+                         :when (>= commit-index leader-commit)]
+                     commit-index)]
+          (log/trace "await-n-applied" n leader-commit)
+          (if (>= (count lead) n)
+            lead
+            (recur (dec i))))))))
+
+(defn raft-write [nodes key value]
+  (let [id (java.util.UUID/randomUUID)]
+    (try
+      (try-try-again
+       {:sleep 10
+        :tries 100}
+       (fn []
+         (let [leader (stable-leader? nodes 1)]
+           (log/trace "raft-write" key value (:id leader))
+           (>!! (:commands leader) {:type :operation
+                                    :payload {:op :write
+                                              :key key
+                                              :value value}
+                                    :operation-type ::bogon
+                                    :serial id})
+           (when (= :dunno (await-applied nodes id :dunno))
+             (throw (Exception. "write failed?"))))))
+      (catch Exception e
+        (doseq [node nodes]
+          (log/trace (-> node :raft deref)))
+        (throw e)))))
 
 ;; (defn raft-read [nodes key]
 ;;   (loop [id (java.util.UUID/randomUUID)
@@ -275,6 +278,59 @@
       (finally
         (shut-it-down! nodes)))))
 
+(deftest test-operations
+  (let [node-ids-and-channels (into {} (for [i (range 5)]
+                                         [i (chan (sliding-buffer 10))]))
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) node-ids-and-channels)
+        nodes (doall (for [[node-id in] node-ids-and-channels]
+                       (raft-obj in node-id cluster)))]
+    (try
+      (testing "elect leader"
+        (is (stable-leader? nodes 5)))
+      (raft-write nodes "hello" "world")
+      (await-n-applied nodes 5)
+      (doseq [node nodes
+              :let [{:keys [raft]} node
+                    {{{:strs [hello]} :value} :raft-state} (deref raft)]]
+        (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
+      ;; (doseq [node nodes
+      ;;         :let [{:keys [raft]} node
+      ;;               x (deref raft)]]
+      ;;   (println)
+      ;;   (prn x))
+      (finally
+        (shut-it-down! nodes)))))
+
+
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 call for election␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 call for election␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 :follower => :candidate 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 :follower => :candidate 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 jump-to-newer-term␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 jump-to-newer-term␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 votes for 4 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 1 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 1 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 current-term 3N 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 current-term 3N 44N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 current-term 3N 45N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 votes for 0 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 current-term 3N 45N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 votes for 0 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 received vote from 3 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 received vote from 2 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 2 46N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 votes for 4 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 2 46N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 received vote from 2 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 becoming leader with 3 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 :candidate => :leader 47N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 received vote from 3 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 0 47N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 becoming leader with 3 in 3N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 :candidate => :leader 47N␃
+;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 0 47N␃
+
 ;; (deftest test-stress
 ;;   (let [node-ids-and-channels (into {} (for [i (range 3)]
 ;;                                          [i (chan (sliding-buffer 10))]))
@@ -307,30 +363,30 @@
     `(do ~@body)))
 
 (foo (resolve 'clojure.test/original-test-var)
-  (in-ns 'clojure.test)
+     (in-ns 'clojure.test)
 
-  (def original-test-var test-var)
+     (def original-test-var test-var)
 
-  (defn test-var [v]
-    (clojure.tools.logging/trace "testing" v)
-    (let [start (System/currentTimeMillis)
-          result (original-test-var v)]
-      (clojure.tools.logging/trace
-       "testing" v "took"
-       (/ (- (System/currentTimeMillis) start) 1000.0)
-       "seconds")
-      result))
+     (defn test-var [v]
+       (clojure.tools.logging/trace "testing" v)
+       (let [start (System/currentTimeMillis)
+             result (original-test-var v)]
+         (clojure.tools.logging/trace
+          "testing" v "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
 
-  (def original-test-ns test-ns)
+     (def original-test-ns test-ns)
 
-  (defn test-ns [ns]
-    (clojure.tools.logging/trace "testing namespace" ns)
-    (let [start (System/currentTimeMillis)
-          result (original-test-ns ns)]
-      (clojure.tools.logging/trace
-       "testing namespace" ns "took"
-       (/ (- (System/currentTimeMillis) start) 1000.0)
-       "seconds")
-      result))
+     (defn test-ns [ns]
+       (clojure.tools.logging/trace "testing namespace" ns)
+       (let [start (System/currentTimeMillis)
+             result (original-test-ns ns)]
+         (clojure.tools.logging/trace
+          "testing namespace" ns "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
 
-  (in-ns 'com.manigfeald.raft-test))
+     (in-ns 'com.manigfeald.raft-test))
