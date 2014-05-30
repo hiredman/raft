@@ -8,10 +8,12 @@
 ;; TODO: knossos
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
-(defrecord RaftState [current-term voted-for log commit-index last-applied node-type value votes leader-id node-set])
+(defrecord RaftState [current-term voted-for log commit-index last-applied
+                      node-type value votes leader-id node-set])
 (defrecord IO [message out-queue])
 (defrecord Timer [now next-timeout period])
-(defrecord ImplementationState [io raft-state raft-leader-state id running-log timer])
+(defrecord ImplementationState [io raft-state raft-leader-state id running-log
+                                timer])
 
 (defn raft
   "return an init state when given a node id and a node-set"
@@ -32,7 +34,8 @@
   {:post [(not (seq (for [message (:out-queue (:io %))
                           :when (= (:type message) :request-vote-response)
                           :when (:success? message)
-                          :when (not= (:voted-for (:raft-state %)) (:target message))]
+                          :when (not= (:voted-for (:raft-state %))
+                                      (:target message))]
                       message)))
           (>= (count (:log (:raft-state %)))
               (count (:log (:raft-state raft-state))))]}
@@ -65,7 +68,8 @@
     (assert (not (seq (for [message (:out-queue (:io r))
                             :when (= (:type message) :request-vote-response)
                             :when (:success? message)
-                            :when (not= (:voted-for (:raft-state r)) (:target message))]
+                            :when (not= (:voted-for (:raft-state r))
+                                        (:target message))]
                         message)))
             (pr-str
              (update-in r [:io :out-queue] seq)))

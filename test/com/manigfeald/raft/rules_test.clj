@@ -39,10 +39,11 @@
                              :node-type :follower
                              :votes 0
                              :voted-for nil}}]
-         (update-in (jump-to-newer-term {:io {:message {:term 2}}
-                                         :running-log PersistentQueue/EMPTY
-                                         :raft-state {:current-term 1
-                                                      :node-type :candidate-id}})
+         (update-in (jump-to-newer-term
+                     {:io {:message {:term 2}}
+                      :running-log PersistentQueue/EMPTY
+                      :raft-state {:current-term 1
+                                   :node-type :candidate-id}})
                     [1] dissoc :running-log))))
 
 (deftest t-follower-respond-to-append-entries
@@ -224,7 +225,8 @@
     (is (= 3 (count messages)) messages)
     (is (= #{::a ::b ::c} (set (map :target messages))))
     (is (= 2 (:current-term (:raft-state result))))
-    (doseq [{:keys [type target candidate-id from last-log-term last-log-index term]}
+    (doseq [{:keys [type target candidate-id from last-log-term
+                    last-log-index term]}
             messages]
       (is (= term 2))
       (is (= last-log-index 1))
@@ -441,7 +443,7 @@
                               :match-index {}},
           :id 2,
           :running-log PersistentQueue/EMPTY,
-          :timer {:now 1401418884457, :next-timeout 1401418884545, :period 1005},
+          :timer {:now 1401418884457, :next-timeout 1401418884545, :period 1005}
           :run-count 16530N})]
     (is applied?)
     (is (contains? (:log (:raft-state result)) 1N))))

@@ -57,9 +57,11 @@
                 (fn [~bindings]
                   ~body))))
   ([name head body bindings]
-     `(assoc (->Rule (fn ~(symbol (str (clojure.core/name name) "-head")) [~bindings]
+     `(assoc (->Rule (fn ~(symbol (str (clojure.core/name name) "-head"))
+                       [~bindings]
                        ~head)
-                     (fn ~(symbol (str (clojure.core/name name) "-body"))[~bindings]
+                     (fn ~(symbol (str (clojure.core/name name) "-body"))
+                       [~bindings]
                        ~body))
         :name ~name)))
 
@@ -78,7 +80,7 @@
    (-> state
        (update-in [:raft-state] advance-applied-to-commit)
        #_(as-> state
-             (log-trace state (:value (:raft-state state)))))
+               (log-trace state (:value (:raft-state state)))))
    {:as state
     {:keys [commit-index last-applied]} :raft-state}))
 
@@ -254,15 +256,20 @@
                                         :votes 0
                                         :voted-for nil
                                         :leader-id id})
-        (update-in [:raft-leader-state] merge {:match-index (into {} (for [node node-set]
-                                                                       [node 0]))
-                                               :next-index (into {} (for [node node-set]
-                                                                       [node (inc (last-log-index raft-state))]))})
+        (update-in [:raft-leader-state] merge
+                   {:match-index
+                    (into {} (for [node node-set]
+                               [node 0]))
+                    :next-index
+                    (into {} (for [node node-set]
+                               [node (inc (last-log-index raft-state))]))})
         (assoc-in [:timer :next-timeout] (+ now period))
-        (assoc-in [:raft-state :log] (into {} (for [[index entry] (:log (:raft-state state))]
-                                                (if (> index commit-index)
-                                                  [index (assoc entry :term current-term)]
-                                                  [index entry]))))
+        ;; TODO: this is a departure from strict raft
+        (assoc-in [:raft-state :log]
+                  (into {} (for [[index entry] (:log (:raft-state state))]
+                             (if (> index commit-index)
+                               [index (assoc entry :term current-term)]
+                               [index entry]))))
         (publish (broadcast node-set
                             {:type :append-entries
                              :term current-term
@@ -276,7 +283,8 @@
      :keys [id]
      {{:keys [success? from]} :message} :io
      {:keys [now period]} :timer
-     {:keys [votes node-set current-term commit-index] :as raft-state} :raft-state})
+     {:keys [votes node-set current-term commit-index]
+      :as raft-state} :raft-state})
    (rule
     (not (enough-votes? (count node-set) (inc votes)))
     (-> state
@@ -369,7 +377,8 @@
    {:as state
     {{:as message message-type :type} :message} :io
     {:keys [match-index]} :raft-leader-state
-    {:keys [current-term node-type commit-index node-set] :as raft-state} :raft-state}))
+    {:keys [current-term node-type commit-index node-set]
+     :as raft-state} :raft-state}))
 
 (require 'clojure.tools.logging)
 
@@ -409,14 +418,16 @@
 (def update-commit
   (rule
    (and (= :leader node-type)
-        (possible-new-commit commit-index raft-state match-index node-set current-term))
+        (possible-new-commit commit-index raft-state match-index node-set
+                             current-term))
    (-> state
        (assoc-in [:raft-state :commit-index]
                  (possible-new-commit
                   commit-index raft-state match-index node-set current-term)))
    {:as state
     {:keys [match-index]} :raft-leader-state
-    {:keys [commit-index node-set current-term node-type] :as raft-state} :raft-state}))
+    {:keys [commit-index node-set current-term node-type]
+     :as raft-state} :raft-state}))
 
 (def leader-handle-append-entries-response
   (guard

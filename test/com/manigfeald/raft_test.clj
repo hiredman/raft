@@ -68,26 +68,27 @@
 ;; ;;       (finally
 ;; ;;         (shut-it-down! nodes)))))
 
-;; ;; (deftest test-kill-node
-;; ;;   (dotimes [i 8]
-;; ;;     (let [n (inc (* (inc i) 2))
-;; ;;           leader (chan (dropping-buffer 10))
-;; ;;           [leaders nodes] (f n leader)]
-;; ;;       (try
-;; ;;         (testing "elect leader"
-;; ;;           (is (stable-leader? nodes n)))
-;; ;;         (dotimes [ii (Math/floor (/ n 2))]
-;; ;;           (testing "kill leader and elect a new one"
-;; ;;             (let [[leader'] (leaders-of nodes 1)]
-;; ;;               (doseq [node nodes
-;; ;;                       :when (= leader' (:id node))]
-;; ;;                 (future-cancel (:future node)))
-;; ;;               (is (stable-leader? (for [node nodes
-;; ;;                                         :when (not (future-done? (:future node)))]
-;; ;;                                     node)
-;; ;;                                   (- n (inc ii)))))))
-;; ;;         (finally
-;; ;;           (shut-it-down! nodes))))))
+;; (deftest test-kill-node
+;;   (dotimes [i 8]
+;;     (let [n (inc (* (inc i) 2))
+;;           leader (chan (dropping-buffer 10))
+;;           [leaders nodes] (f n leader)]
+;;       (try
+;;         (testing "elect leader"
+;;           (is (stable-leader? nodes n)))
+;;         (dotimes [ii (Math/floor (/ n 2))]
+;;           (testing "kill leader and elect a new one"
+;;             (let [[leader'] (leaders-of nodes 1)]
+;;               (doseq [node nodes
+;;                       :when (= leader' (:id node))]
+;;                 (future-cancel (:future node)))
+;;               (is (stable-leader?
+;;                    (for [node nodes
+;;                          :when (not (future-done? (:future node)))]
+;;                      node)
+;;                    (- n (inc ii)))))))
+;;         (finally
+;;           (shut-it-down! nodes))))))
 
 (defn raft-obj [in id cluster]
   (let [s (atom nil)
@@ -102,7 +103,8 @@
                 (let [state (cond-> state
                                     (= :leader (:node-type (:raft-state state)))
                                     (assoc-in [:timer :period] 300)
-                                    (not= :leader (:node-type (:raft-state state)))
+                                    (not= :leader (:node-type
+                                                   (:raft-state state)))
                                     (assoc-in [:timer :period]
                                               (+ 500 (rand-int 1000))))
                       message (alt!!
@@ -253,7 +255,8 @@
 (deftest test-leader-election
   (let [node-ids-and-channels (into {} (for [i (range 3)]
                                          [i (chan (sliding-buffer 10))]))
-        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) node-ids-and-channels)
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
+                        node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))]
     (try
@@ -264,7 +267,8 @@
 (deftest test-remove-node
   (let [node-ids-and-channels (into {} (for [i (range 5)]
                                          [i (chan (sliding-buffer 10))]))
-        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) node-ids-and-channels)
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
+                        node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))]
     (try
@@ -281,7 +285,8 @@
 (deftest test-operations
   (let [node-ids-and-channels (into {} (for [i (range 5)]
                                          [i (chan (sliding-buffer 10))]))
-        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) node-ids-and-channels)
+        cluster (reduce #(add-node % (key %2) (val %2))
+                        (->ChannelCluster) node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))]
     (try
@@ -304,7 +309,8 @@
 ;; (deftest test-stress
 ;;   (let [node-ids-and-channels (into {} (for [i (range 3)]
 ;;                                          [i (chan (sliding-buffer 10))]))
-;;         cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster) node-ids-and-channels)
+;;         cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
+;;                         node-ids-and-channels)
 ;;         nodes (doall (for [[node-id in] node-ids-and-channels]
 ;;                        (raft-obj in node-id cluster)))]
 ;;     (try

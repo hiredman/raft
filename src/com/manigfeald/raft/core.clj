@@ -36,7 +36,8 @@
         :remove-node (recur (-> raft-state
                                 (assoc :last-applied new-last)
                                 (update-in [:node-set] disj (:node op))))
-        (let [[return new-value] (apply-operation (:value raft-state) (:payload op))
+        (let [[return new-value] (apply-operation (:value raft-state)
+                                                  (:payload op))
               new-state (assoc-in raft-state [:log (:index op) :return] return)]
           (recur (assoc new-state
                    :value new-value
@@ -79,11 +80,13 @@
 (defn enough-votes? [total votes]
   (>= votes (inc (Math/floor (/ total 2.0)))))
 
-(defn possible-new-commit [commit-index raft-state match-index node-set current-term]
+(defn possible-new-commit
+  [commit-index raft-state match-index node-set current-term]
   (first (sort (for [[n c] (frequencies (for [[index entry] (:log raft-state)
                                               [node match-index] match-index
                                               :when (>= match-index index)
-                                              :when (= current-term (:term entry))
+                                              :when (= current-term
+                                                       (:term entry))
                                               :when (> index commit-index)]
                                           index))
                      :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
