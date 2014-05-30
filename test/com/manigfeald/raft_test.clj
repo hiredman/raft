@@ -301,36 +301,6 @@
       (finally
         (shut-it-down! nodes)))))
 
-
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 call for election␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 call for election␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 :follower => :candidate 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 :follower => :candidate 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 jump-to-newer-term␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 jump-to-newer-term␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 votes for 4 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 1 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 1 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 current-term 3N 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 current-term 3N 44N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 current-term 3N 45N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 votes for 0 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 current-term 3N 45N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-3჻com.manigfeald.raft-test჻3 votes for 0 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 received vote from 3 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 received vote from 2 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 2 46N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-2჻com.manigfeald.raft-test჻2 votes for 4 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 2 46N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 received vote from 2 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 becoming leader with 3 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 :candidate => :leader 47N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 received vote from 3 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-4჻com.manigfeald.raft-test჻4 votes 0 47N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 becoming leader with 3 in 3N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 :candidate => :leader 47N␃
-;; ␂15:24:44჻clojure-agent-send-off-pool-0჻com.manigfeald.raft-test჻0 votes 0 47N␃
-
 ;; (deftest test-stress
 ;;   (let [node-ids-and-channels (into {} (for [i (range 3)]
 ;;                                          [i (chan (sliding-buffer 10))]))
