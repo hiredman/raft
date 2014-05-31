@@ -107,7 +107,7 @@
                                     (not= :leader (:node-type
                                                    (:raft-state state)))
                                     (assoc-in [:timer :period]
-                                              (+ 500 (rand-int 1000))))
+                                              (+ 500 (* 100 (rand-int 10)))))
                       message (alt!!
                                commands
                                ([message] message)
@@ -130,10 +130,10 @@
                         _ (doseq [msg (:out-queue (:io new-state))]
                             (assert (not= :broadcast (:target msg)))
                             (send-to cluster (:target msg) msg))
-                        _ (doseq [{:keys [level message] :as m}
-                                  (:running-log new-state)]
-                            (case level
-                              :trace (log/trace message)))
+                        ;; _ (doseq [{:keys [level message] :as m}
+                        ;;           (:running-log new-state)]
+                        ;;     (case level
+                        ;;       :trace (log/trace message)))
                         new-state (update-in new-state [:io :out-queue] empty)
                         new-state (update-in new-state [:running-log] empty)
                         new-state (update-in new-state [:applied-rules] empty)]
@@ -156,7 +156,7 @@
   (try-try-again
    {:decay :exponential
     :sleep 10
-    :tries 10}
+    :tries 20}
    (fn []
      (let [lead (for [node nodes
                       :let [{:keys [raft]} node
@@ -192,6 +192,7 @@
                      :when entry
                      :when (>= last-applied (:index entry))]
                  (:return entry))]
+         ;; pass in n?
          (if (= (count nodes) (count r))
            (first r)
            (throw (Exception.))))))
@@ -299,7 +300,7 @@
       (testing "elect leader"
         (is (stable-leader? nodes 5)))
       (raft-write nodes "hello" "world")
-      (await-n-applied nodes 5)
+      ;; (await-n-applied nodes 5)
       (doseq [node nodes
               :let [{:keys [raft]} node
                     {{{:strs [hello]} :value} :raft-state} (deref raft)]]

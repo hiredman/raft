@@ -1,10 +1,15 @@
 (ns com.manigfeald.raft.core
+  "clojure.core contains lots of functions used in most(all?) clojure
+namespaces, com.manigfeald.raft.core contains functions used in
+most(all?) com.manigfeald.raft* namespaces"
   (:require [com.manigfeald.raft.log :as log])
   (:import (clojure.lang PersistentQueue)))
 
 (defprotocol RaftOperations
   "The value that you want raft to maintain implements this protocol"
-  (apply-operation [value operation]))
+  (apply-operation [value operation]
+    "apply-operation returns a tuple of
+    [logical-operation-return-value possibly-updated-value]"))
 
 (defrecord MapValue []
   RaftOperations
@@ -13,17 +18,21 @@
       :read [(get value (:key operation)) value]
       :write [nil (assoc value
                     (:key operation) (:value operation))]
-      :write-if [nil (if (contains? value (:key operation))
-                       value
-                       (assoc value
-                         (:key operation) (:value operation)))]
+      :write-if (if (contains? value (:key operation))
+                  [false value]
+                  [true (assoc value
+                          (:key operation) (:value operation))])
       :delete [nil (dissoc value (:key operation))]
       (assert nil operation))))
+
+(alter-meta! #'map->MapValue assoc :no-doc true)
 
 (declare log-entry-of
          insert-entries)
 
-(defn set-return-value [raft-state index value]
+(defn set-return-value
+  "set the return value of an operation in the log"
+  [raft-state index value]
   (let [entry (log-entry-of raft-state index)]
     (insert-entries raft-state [(assoc entry :return value)])))
 
@@ -52,10 +61,14 @@
                    :last-applied new-last)))))
     raft-state))
 
-(defn consume-message [state]
+(defn consume-message
+  "remove a message from the state"
+  [state]
   (assoc-in state [:io :message] nil))
 
-(defn publish [state messages]
+(defn publish
+  "add messages to the out-queue in the state"
+  [state messages]
   {:pre [(not (map? messages))
          (every? :from messages)]}
   (update-in state [:io :out-queue] into
@@ -85,13 +98,14 @@
 
 (defn possible-new-commit
   [commit-index raft-state match-index node-set current-term]
-  (first (sort (for [[n c] (frequencies (for [[index term] (log/indices-and-terms
-                                                             (:log raft-state))
-                                              [node match-index] match-index
-                                              :when (>= match-index index)
-                                              :when (= current-term term)
-                                              :when (> index commit-index)]
-                                          index))
+  (first (sort (for [[n c] (frequencies
+                            (for [[index term] (log/indices-and-terms
+                                                (:log raft-state))
+                                  [node match-index] match-index
+                                  :when (>= match-index index)
+                                  :when (= current-term term)
+                                  :when (> index commit-index)]
+                              index))
                      :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
                  n))))
 
@@ -119,13 +133,14 @@
     raft-state
     (update-in raft-state [:log]
                log/add-to-log
-               (inc (last-log-index raft-state))
+               (biginteger (inc (last-log-index raft-state)))
                operation)))
 
 (defn insert-entries [raft-state entries]
+  {:pre [(every? map? entries)]}
   (assoc raft-state
     :log (reduce
-          #(log/add-to-log %1 (:index %2) %2)
+          #(log/add-to-log %1 (biginteger (:index %2)) %2)
           (:log raft-state)
           entries)))
 

@@ -6,6 +6,7 @@
 
 ;; TODO: document log entry format
 ;; TODO: knossos
+;; TODO: strict
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
@@ -14,6 +15,12 @@
 (defrecord Timer [now next-timeout period])
 (defrecord ImplementationState [io raft-state raft-leader-state id running-log
                                 timer])
+
+(alter-meta! #'map->RaftLeaderState assoc :no-doc true)
+(alter-meta! #'map->RaftState assoc :no-doc true)
+(alter-meta! #'map->IO assoc :no-doc true)
+(alter-meta! #'map->Timer assoc :no-doc true)
+(alter-meta! #'map->ImplementationState assoc :no-doc true)
 
 (defn raft
   "return an init state when given a node id and a node-set"

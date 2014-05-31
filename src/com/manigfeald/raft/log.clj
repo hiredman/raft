@@ -1,4 +1,6 @@
-(ns com.manigfeald.raft.log)
+(ns com.manigfeald.raft.log
+  "extends RaftLog and Counted to ISeq and IPersistentMap because you
+  need at least two implementations for an abstraction")
 
 (defprotocol RaftLog
   (log-contains? [log log-term log-index])
@@ -12,7 +14,7 @@
   (entry-with-serial [log serial]))
 
 (defprotocol Counted
-  (log-count [_]))
+  (log-count [log]))
 
 (extend-type clojure.lang.ISeq
   Counted
@@ -79,8 +81,13 @@
     (for [[index {:keys [term]}] log]
       [index term]))
   (add-to-log [log index entry]
-    (assoc log
-      index (assoc entry :index index)))
+    (assert (map? log))
+    (assert (number? index))
+    (assert (map? entry))
+    (let [l (assoc log
+              index (assoc entry :index index))]
+      (assert (every? number? (keys log)))
+      l))
   (rewrite-terms-after [log target-index new-term]
     (into log (for [[index entry] log]
                 (if (> index target-index)
@@ -122,6 +129,8 @@
       (assert (= r1 r2) ["indices-and-terms" r1 r2])
       r1))
   (add-to-log [log index entry]
+    (assert (map? entry) entry)
+    (assert (number? index) index)
     (let [r1 (add-to-log log1 index entry)
           r2 (add-to-log log2 index entry)]
       (assert (= (set (indices-and-terms r1))
@@ -144,3 +153,8 @@
           r2 (entry-with-serial log2 serial)]
       (assert (= r1 r2) ["entry-with-serial" r1 r2])
       r1)))
+
+(alter-meta! #'->LogChecker assoc :doc
+             "satisfies RaftLog, takes two things that satisfy RaftLog
+             and runs all operations against both, checking one
+             against the other")

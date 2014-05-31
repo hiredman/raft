@@ -1,4 +1,12 @@
 (ns com.manigfeald.raft.rules
+  "rules are a combination of a head which is a predicate and a body
+that updates and returns the passed in state. when a rule is applied
+to a value, if the head returns true for a given value that value is
+give to the body, and the updated value is returned, if the head
+returns false the passed in value is returned unmodified.
+
+syntactically rules have a third component, which is the name/binding
+form that the value will be bound to in both the head and the body."
   (:require [com.manigfeald.raft.core :refer :all]))
 
 (defrecord Rule [head body]
@@ -21,12 +29,17 @@
      [false arg]
      subrules)))
 
+(alter-meta! #'->CompoundRule assoc :no-doc true)
+(alter-meta! #'->Rule assoc :no-doc true)
+(alter-meta! #'map->CompoundRule assoc :no-doc true)
+(alter-meta! #'map->Rule assoc :no-doc true)
+
 (defmacro rule
   "a rule is a combination of some way to decide if the rule
   applies (the head) and some way to apply the rule (the body)"
   ([head body bindings]
-     (if (:line (meta head))
-       `(rule ~(str "line-" (:line (meta head)))
+     (if-let [line (:line (meta &form))]
+       `(rule ~(str "line-" line)
               ~head ~body ~bindings)
        `(->Rule (fn [~bindings]
                   ~head)
@@ -42,6 +55,8 @@
         :name ~name)))
 
 (defmacro guard
+  "a guard is a rule with a normal rule head, but the body is a
+  composition of other rules"
   [head & things]
   (let [rules (butlast things)
         bindings (last things)]
@@ -54,9 +69,7 @@
   (rule
    (> commit-index last-applied)
    (-> state
-       (update-in [:raft-state] advance-applied-to-commit)
-       #_(as-> state
-               (log-trace state (:value (:raft-state state)))))
+       (update-in [:raft-state] advance-applied-to-commit))
    {:as state
     {:keys [commit-index last-applied]} :raft-state}))
 
@@ -69,7 +82,7 @@
        (update-in [:raft-state] merge {:node-type :follower
                                        :current-term message-term
                                        :leader-id nil
-                                       :votes 0
+                                       :votes 0N
                                        :voted-for nil}))
    {:as state
     :keys [id]
@@ -144,7 +157,11 @@
     :success
     (and (or (= voted-for candidate-id)
              (nil? voted-for))
-         (log-contains? raft-state last-log-term last-log-index))
+         (or (log-contains? raft-state last-log-term last-log-index)
+             ;; another departure from strict raft
+             (and (:term (log-entry-of raft-state last-log-index))
+                  (> last-log-term
+                     (:term (log-entry-of raft-state last-log-index))))))
     (-> state
         (log-trace "votes for" candidate-id "in" current-term)
         (consume-message)
@@ -161,11 +178,20 @@
        :keys [last-log-index last-log-term] :as message} :message} :io
      {:keys [current-term node-type voted-for] :as raft-state} :raft-state})
    (rule
-    (or (and (not= voted-for candidate-id)
-             (not (nil? voted-for)))
-        (not (log-contains? raft-state last-log-term last-log-index)))
+    (not (and (or (= voted-for candidate-id)
+                  (nil? voted-for))
+              (or (log-contains? raft-state last-log-term last-log-index)
+                  (and (:term (log-entry-of raft-state last-log-index))
+                       (> last-log-term
+                          (:term (log-entry-of raft-state last-log-index)))))))
     (-> state
-        (log-trace "doesn't vote for" candidate-id "in" current-term)
+        (log-trace "doesn't vote for" candidate-id "in" current-term
+                   ;; {:last-log-index last-log-index
+                   ;;  :last-log-term last-log-term
+                   ;;  :voted-for voted-for}
+                   ;; (com.manigfeald.raft.log/indices-and-terms
+                   ;;  (:log (:raft-state state)))
+                   )
         (consume-message)
         (publish [{:type :request-vote-response
                    :target candidate-id
@@ -224,13 +250,13 @@
         (log-trace "received vote from" from "in" current-term)
         (log-trace "becoming leader with" (inc votes) "in" current-term)
         (update-in [:raft-state] merge {:node-type :leader
-                                        :votes 0
+                                        :votes 0N
                                         :voted-for nil
                                         :leader-id id})
         (update-in [:raft-leader-state] merge
                    {:match-index
                     (into {} (for [node node-set]
-                               [node 0]))
+                               [node 0N]))
                     :next-index
                     (into {} (for [node node-set]
                                [node (inc (last-log-index raft-state))]))})
@@ -275,7 +301,7 @@
        (consume-message)
        (update-in [:raft-state] merge {:node-type :follower
                                        :voted-for leader-id
-                                       :votes 0})
+                                       :votes 0N})
        (assoc-in [:timer :next-timeout] (+ period now)))
    {:as state
     {{message-type :type
@@ -363,10 +389,11 @@
                    :target node
                    :term current-term
                    :leader-id id
-                   :prev-log-index (max 0 (dec next-index))
-                   :prev-log-term (or (:term (log-entry-of raft-state (dec next-index)))
-                                      0)
-                   :entries (for [index (range (max 0 (dec next-index))
+                   :prev-log-index (max 0N (dec next-index))
+                   :prev-log-term (or (:term (log-entry-of raft-state
+                                                           (dec next-index)))
+                                      0N)
+                   :entries (for [index (range (max 0N (dec next-index))
                                                (inc next-index))
                                   :when (not (zero? index))]
                               (log-entry-of raft-state index))
@@ -402,7 +429,7 @@
     (-> state
         (consume-message)
         (update-in [:raft-leader-state :next-index from] dec)
-        (update-in [:raft-leader-state :next-index from] max 0))
+        (update-in [:raft-leader-state :next-index from] max 0N))
     {:as state
      {{:keys [success? from]} :message} :io})
    (rule
