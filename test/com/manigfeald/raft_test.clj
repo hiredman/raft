@@ -152,28 +152,28 @@
      :commands commands
      :future f}))
 
-
 (defn stable-leader? [nodes n]
-  (loop [i 100]
-    (Thread/sleep 1000)
-    (if (zero? i)
-      false
-      (let [lead (for [node nodes
-                       :let [{:keys [raft]} node
-                             v (deref raft)
-                             {{:keys [leader-id]} :raft-state} v]
-                       :when leader-id
-                       leader nodes
-                       :when (= leader-id (:id leader))]
-                   leader)
-            f (frequencies lead)
-            [lead c] (last (sort-by second f))]
-        (log/trace "stable-leader?" n (into {} (for [[a b] f]
-                                                 [(-> a :raft deref :id) b])))
-        (if (and lead
-                 (>= c n))
-          lead
-          (recur (dec i)))))))
+  (try-try-again
+   {:decay :exponential
+    :sleep 10
+    :tries 10}
+   (fn []
+     (let [lead (for [node nodes
+                      :let [{:keys [raft]} node
+                            v (deref raft)
+                            {{:keys [leader-id]} :raft-state} v]
+                      :when leader-id
+                      leader nodes
+                      :when (= leader-id (:id leader))]
+                  leader)
+           f (frequencies lead)
+           [lead c] (last (sort-by second f))]
+       (log/trace "stable-leader?" n (into {} (for [[a b] f]
+                                                [(-> a :raft deref :id) b])))
+       (if (and lead
+                (>= c n))
+         lead
+         (throw (Exception. "failed to get a leader")))))))
 
 (defn await-applied [nodes serial-w dunno]
   (try
@@ -227,14 +227,14 @@
          (if-let [leader (stable-leader? nodes 1)]
            (do
              (log/trace "raft-write" key value (:id leader))
-               (>!! (:commands leader) {:type :operation
-                                        :payload {:op :write
-                                                  :key key
-                                                  :value value}
-                                        :operation-type ::bogon
-                                        :serial id})
-               (when (= :dunno (await-applied nodes id :dunno))
-                 (throw (Exception. "write failed?"))))
+             (>!! (:commands leader) {:type :operation
+                                      :payload {:op :write
+                                                :key key
+                                                :value value}
+                                      :operation-type ::bogon
+                                      :serial id})
+             (when (= :dunno (await-applied nodes id :dunno))
+               (throw (Exception. "write failed?"))))
            (throw (Exception. "write failed? missing leader")))))
       (catch Exception e
         (doseq [node nodes]
