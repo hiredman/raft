@@ -5,24 +5,22 @@
   (last-log-index [log])
   (last-log-term [log])
   (indices-and-terms [log])
-  (serial-exists? [log serial])
   (add-to-log [log index entry])
   ;; for strict "raft" make this operation a no op
   (rewrite-terms-after [log index new-term])
   (log-entry-of [log index])
-  ;; don't need this?
-  )
+  (entry-with-serial [log serial]))
 
 (defprotocol Counted
   (log-count [_]))
 
-(defrecord ListLog [lst serials]
+(extend-type clojure.lang.ISeq
   Counted
-  (log-count [_]
-    (count lst))
+  (log-count [log]
+    (count log))
   RaftLog
   (log-contains? [log log-term log-index]
-    (loop [[head & tail] lst]
+    (loop [[head & tail] log]
       (cond
        (nil? head)
        false
@@ -32,31 +30,32 @@
        :else
        (recur tail))))
   (last-log-index [log]
-    (or (:index (first lst)) 0))
+    (or (:index (first log)) 0))
   (last-log-term [log]
-    (or (:term (first lst)) 0))
+    (or (:term (first log)) 0))
   (indices-and-terms [log]
-    (for [entry lst]
+    (for [entry log]
       [(:index entry) (:term entry)]))
-  (serial-exists? [log serial]
-    (contains? serials serial))
   (add-to-log [log index entry]
-    (->ListLog (conj (doall (for [entry lst
-                                  :when (not= index (:index entry))]
-                              entry))
-                     (assoc entry
-                       :index index))
-               (conj serials (:serial entry))))
-  (rewrite-terms-after [log index new-term]
-    (->ListLog (for [entry lst]
-                 (if (> (:index entry) index)
-                   (assoc entry :term new-term)
+    (conj (doall (for [entry log
+                       :when (not= index (:index entry))]
                    entry))
-               serials))
+          (assoc entry
+            :index index)))
+  (rewrite-terms-after [log index new-term]
+    (for [entry log]
+      (if (> (:index entry) index)
+        (assoc entry :term new-term)
+        entry)))
   (log-entry-of [log needle-index]
     (first
-     (for [{:keys [index] :as entry} lst
+     (for [{:keys [index] :as entry} log
            :when (= index needle-index)]
+       entry)))
+  (entry-with-serial [log needle-serial]
+    (first
+     (for [{:keys [serial] :as entry} log
+           :when (= serial needle-serial)]
        entry))))
 
 (extend-type clojure.lang.IPersistentMap
@@ -79,10 +78,6 @@
   (indices-and-terms [log]
     (for [[index {:keys [term]}] log]
       [index term]))
-  (serial-exists? [log needle-serial]
-    (boolean (seq (for [[index {:keys [serial]}] log
-                        :when (= serial needle-serial)]
-                    index))))
   (add-to-log [log index entry]
     (assoc log
       index (assoc entry :index index)))
@@ -92,7 +87,11 @@
                   [index (assoc entry :term new-term)]
                   [index entry]))))
   (log-entry-of [log index]
-    (get log index)))
+    (get log index))
+  (entry-with-serial [log needle-serial]
+    (first (for [[index {:keys [serial] :as entry}] log
+                 :when (= serial needle-serial)]
+             entry))))
 
 (deftype LogChecker [log1 log2]
   Counted
@@ -122,11 +121,6 @@
           r2 (indices-and-terms log2)]
       (assert (= r1 r2) ["indices-and-terms" r1 r2])
       r1))
-  (serial-exists? [log serial]
-    (let [r1 (serial-exists? log1 serial)
-          r2 (serial-exists? log2 serial)]
-      (assert (= r1 r2) ["serial-exists?" r1 r2])
-      r1))
   (add-to-log [log index entry]
     (let [r1 (add-to-log log1 index entry)
           r2 (add-to-log log2 index entry)]
@@ -144,4 +138,9 @@
     (let [r1 (log-entry-of log1 index)
           r2 (log-entry-of log2 index)]
       (assert (= r1 r2) ["log-entry-of" r1 r2])
+      r1))
+  (entry-with-serial [log serial]
+    (let [r1 (entry-with-serial log1 serial)
+          r2 (entry-with-serial log2 serial)]
+      (assert (= r1 r2) ["entry-with-serial" r1 r2])
       r1)))

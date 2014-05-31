@@ -6,7 +6,8 @@
                                         close!]]
             [clojure.tools.logging :as log]
             [clojure.pprint :as pp]
-            [robert.bruce :refer [try-try-again]]))
+            [robert.bruce :refer [try-try-again]]
+            [com.manigfeald.raft.log :as rlog]))
 
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
@@ -140,6 +141,7 @@
                     (if (:stopped? new-state)
                       new-state
                       (recur new-state)))))
+              (catch InterruptedException _)
               (catch Throwable t
                 (log/error t "whoops"))))]
     {:in in
@@ -182,16 +184,18 @@
      (fn []
        (log/trace "await-applied body")
        (let [r (for [node nodes
-                     :let [{:keys [raft]} node v (deref raft)
+                     :let [{:keys [raft]} node
+                           v (deref raft)
                            {{:keys [last-applied log]} :raft-state} v]
-                     [_ {:keys [index serial return]}] log
-                     :when (= serial serial-w)
-                     :when (>= last-applied index)]
-                 return)]
+                     :when log
+                     :let [entry (rlog/entry-with-serial log serial-w)]
+                     :when entry
+                     :when (>= last-applied (:index entry))]
+                 (:return entry))]
          (if (= (count nodes) (count r))
            (first r)
            (throw (Exception.))))))
-    (catch Exception _
+    (catch Exception e
       dunno)))
 
 ;; TODO: may not be required
@@ -220,16 +224,18 @@
        {:sleep 100
         :tries 5}
        (fn []
-         (let [leader (stable-leader? nodes 1)]
-           (log/trace "raft-write" key value (:id leader))
-           (>!! (:commands leader) {:type :operation
-                                    :payload {:op :write
-                                              :key key
-                                              :value value}
-                                    :operation-type ::bogon
-                                    :serial id})
-           (when (= :dunno (await-applied nodes id :dunno))
-             (throw (Exception. "write failed?"))))))
+         (if-let [leader (stable-leader? nodes 1)]
+           (do
+             (log/trace "raft-write" key value (:id leader))
+               (>!! (:commands leader) {:type :operation
+                                        :payload {:op :write
+                                                  :key key
+                                                  :value value}
+                                        :operation-type ::bogon
+                                        :serial id})
+               (when (= :dunno (await-applied nodes id :dunno))
+                 (throw (Exception. "write failed?"))))
+           (throw (Exception. "write failed? missing leader")))))
       (catch Exception e
         (doseq [node nodes]
           (log/trace (-> node :raft deref)))

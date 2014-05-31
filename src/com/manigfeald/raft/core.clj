@@ -35,7 +35,6 @@
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
-          ;; op (get (:log raft-state) new-last)
           op (log-entry-of raft-state new-last)]
       (assert op "op is in the log")
       (case (:operation-type op)
@@ -47,9 +46,7 @@
                                 (update-in [:node-set] disj (:node op))))
         (let [[return new-value] (apply-operation (:value raft-state)
                                                   (:payload op))
-              new-state (assoc-in raft-state [:log (:index op) :return] return)
-              new-state2 (set-return-value raft-state (:index op) return)]
-          (assert (= new-state new-state2) [new-state new-state2])
+              new-state (set-return-value raft-state (:index op) return)]
           (recur (assoc new-state
                    :value new-value
                    :last-applied new-last)))))
@@ -69,20 +66,15 @@
 (defn log-contains? [raft-state log-term log-index]
   (or (and (zero? log-term)
            (zero? log-index))
-      (and (contains? (:log raft-state) log-index)
-           (= log-term (:term (get (:log raft-state) log-index))))))
+      (log/log-contains? (:log raft-state) log-term log-index)))
 
 (defn last-log-index [raft-state]
-  (apply max 0N (keys (:log raft-state))))
+  (biginteger (log/last-log-index (:log raft-state))))
 
 (defn last-log-term [raft-state]
   {:post [(number? %)
           (not (neg? %))]}
-  (biginteger
-   (let [idx (last-log-index raft-state)]
-     (if (zero? idx)
-       0N
-       (:term (get (:log raft-state) idx))))))
+  (biginteger (log/last-log-term (:log raft-state))))
 
 (defn broadcast [node-set msg]
   (for [node node-set]
@@ -93,11 +85,11 @@
 
 (defn possible-new-commit
   [commit-index raft-state match-index node-set current-term]
-  (first (sort (for [[n c] (frequencies (for [[index entry] (:log raft-state)
+  (first (sort (for [[n c] (frequencies (for [[index term] (log/indices-and-terms
+                                                             (:log raft-state))
                                               [node match-index] match-index
                                               :when (>= match-index index)
-                                              :when (= current-term
-                                                       (:term entry))
+                                              :when (= current-term term)
                                               :when (> index commit-index)]
                                           index))
                      :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
@@ -115,23 +107,20 @@
               :message (apply print-str (:id state) message)}))
 
 (defn serial-exists? [raft-state serial]
-  (first (for [[_ entry] (:log raft-state)
-               :when (= (:serial entry) serial)]
-           entry)))
+  (boolean (log/entry-with-serial (:log raft-state) serial)))
 
 (defn add-to-log [raft-state operation]
   {:pre [(contains? operation :operation-type)
          (contains? operation :payload)
          (contains? operation :term)
          (number? (:term operation))
-         (not (neg? (:term operation)))]
-   :post [(= 1 (count (for [[_ entry] (:log %)
-                            :when (= (:serial entry) (:serial operation))]
-                        entry)))]}
+         (not (neg? (:term operation)))]}
   (if (serial-exists? raft-state (:serial operation))
     raft-state
-    (assoc-in raft-state [:log (inc (last-log-index raft-state))]
-              (assoc operation :index (inc (last-log-index raft-state))))))
+    (update-in raft-state [:log]
+               log/add-to-log
+               (inc (last-log-index raft-state))
+               operation)))
 
 (defn insert-entries [raft-state entries]
   (assoc raft-state
@@ -141,12 +130,8 @@
           entries)))
 
 (defn rewrite-terms [raft-state target-index new-term]
-  (assoc-in raft-state [:log]
-            (into {} (for [[index entry] (:log raft-state)]
-                       (if (> index target-index)
-                         [index (assoc entry :term new-term)]
-                         [index entry])))))
-
+  (update-in raft-state [:log] log/rewrite-terms-after
+             target-index new-term))
 
 (defn log-entry-of [raft-state index]
   (log/log-entry-of (:log raft-state) index))
@@ -155,7 +140,7 @@
   (log/log-count (:log raft-state)))
 
 (defn empty-log []
-  {})
+  (com.manigfeald.raft.log.LogChecker. () {}))
 
 (defn reject-append-entries [state leader-id current-term id]
   (-> state
