@@ -1,4 +1,5 @@
 (ns com.manigfeald.raft.core
+  (:require [com.manigfeald.raft.log :as log])
   (:import (clojure.lang PersistentQueue)))
 
 (defprotocol RaftOperations
@@ -19,6 +20,13 @@
       :delete [nil (dissoc value (:key operation))]
       (assert nil operation))))
 
+(declare log-entry-of
+         insert-entries)
+
+(defn set-return-value [raft-state index value]
+  (let [entry (log-entry-of raft-state index)]
+    (insert-entries raft-state [(assoc entry :return value)])))
+
 ;; TODO: move add and remove node in to its own code
 (defn advance-applied-to-commit
   "given a RaftState, ensure all commited operations have been applied
@@ -27,7 +35,8 @@
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
-          op (get (:log raft-state) new-last)]
+          ;; op (get (:log raft-state) new-last)
+          op (log-entry-of raft-state new-last)]
       (assert op "op is in the log")
       (case (:operation-type op)
         :add-node (recur (-> raft-state
@@ -38,7 +47,9 @@
                                 (update-in [:node-set] disj (:node op))))
         (let [[return new-value] (apply-operation (:value raft-state)
                                                   (:payload op))
-              new-state (assoc-in raft-state [:log (:index op) :return] return)]
+              new-state (assoc-in raft-state [:log (:index op) :return] return)
+              new-state2 (set-return-value raft-state (:index op) return)]
+          (assert (= new-state new-state2) [new-state new-state2])
           (recur (assoc new-state
                    :value new-value
                    :last-applied new-last)))))
@@ -121,3 +132,51 @@
     raft-state
     (assoc-in raft-state [:log (inc (last-log-index raft-state))]
               (assoc operation :index (inc (last-log-index raft-state))))))
+
+(defn insert-entries [raft-state entries]
+  (assoc raft-state
+    :log (reduce
+          #(log/add-to-log %1 (:index %2) %2)
+          (:log raft-state)
+          entries)))
+
+(defn rewrite-terms [raft-state target-index new-term]
+  (assoc-in raft-state [:log]
+            (into {} (for [[index entry] (:log raft-state)]
+                       (if (> index target-index)
+                         [index (assoc entry :term new-term)]
+                         [index entry])))))
+
+
+(defn log-entry-of [raft-state index]
+  (log/log-entry-of (:log raft-state) index))
+
+(defn log-count [raft-state]
+  (log/log-count (:log raft-state)))
+
+(defn empty-log []
+  {})
+
+(defn reject-append-entries [state leader-id current-term id]
+  (-> state
+      (consume-message)
+      (publish [{:type :append-entries-response
+                 :term current-term
+                 :success? false
+                 :from id
+                 :target leader-id}])
+      (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
+                                          (-> state :timer :now)))))
+
+(defn accept-append-entries [state leader-id current-term id]
+  (-> state
+      (consume-message)
+      (publish [{:type :append-entries-response
+                 :target leader-id
+                 :term current-term
+                 :success? true
+                 :from id
+                 :last-log-index (last-log-index (:raft-state state))}])
+      (assoc-in [:raft-state :leader-id] leader-id)
+      (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
+                                          (-> state :timer :now)))))

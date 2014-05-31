@@ -20,7 +20,12 @@
   [id node-set timer]
   (->ImplementationState
    (->IO nil PersistentQueue/EMPTY)
-   (->RaftState 0N nil {} 0N 0N :follower
+   (->RaftState 0N
+                nil
+                (empty-log)
+                0N
+                0N
+                :follower
                 (->MapValue)
                 0N
                 nil
@@ -37,8 +42,8 @@
                           :when (not= (:voted-for (:raft-state %))
                                       (:target message))]
                       message)))
-          (>= (count (:log (:raft-state %)))
-              (count (:log (:raft-state raft-state))))]}
+          (>= (log-count (:raft-state %))
+              (log-count (:raft-state raft-state)))]}
   (let [[applied? new-state] (rules-of-raft raft-state)
         r (as-> new-state new-state
                 (cond-> new-state

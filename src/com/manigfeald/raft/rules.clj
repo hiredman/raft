@@ -1,30 +1,6 @@
 (ns com.manigfeald.raft.rules
   (:require [com.manigfeald.raft.core :refer :all]))
 
-(defn reject-append-entries [state leader-id current-term id]
-  (-> state
-      (consume-message)
-      (publish [{:type :append-entries-response
-                 :term current-term
-                 :success? false
-                 :from id
-                 :target leader-id}])
-      (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
-                                          (-> state :timer :now)))))
-
-(defn accept-append-entries [state leader-id current-term id]
-  (-> state
-      (consume-message)
-      (publish [{:type :append-entries-response
-                 :target leader-id
-                 :term current-term
-                 :success? true
-                 :from id
-                 :last-log-index (last-log-index (:raft-state state))}])
-      (assoc-in [:raft-state :leader-id] leader-id)
-      (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
-                                          (-> state :timer :now)))))
-
 (defrecord Rule [head body]
   clojure.lang.IFn
   (invoke [this arg]
@@ -89,7 +65,7 @@
    (and message-term
         (> message-term current-term))
    (-> state
-       (log-trace "jump-to-newer-term")
+       (log-trace "jump-to-newer-term" message-term)
        (update-in [:raft-state] merge {:node-type :follower
                                        :current-term message-term
                                        :leader-id nil
@@ -130,7 +106,6 @@
       message-term :term} :message} :io
     {:keys [current-term node-type] :as raft-state} :raft-state}))
 
-
 (def follower-respond-to-append-entries
   (guard
    (and (= :follower node-type)
@@ -142,11 +117,7 @@
     (and (= message-term current-term)
          (log-contains? raft-state prev-log-term prev-log-index))
     (-> state
-        ;; (cond->
-        ;;  (> (count entries) 0)
-        ;;  (log-trace "accepted" (count entries) "entries" entries))
-        (update-in [:raft-state :log] into (for [entry entries]
-                                             [(:index entry) entry]))
+        (update-in [:raft-state] insert-entries entries)
         (accept-append-entries leader-id current-term id)
         (as-> n
               (assoc-in n [:raft-state :commit-index]
@@ -265,11 +236,7 @@
                                [node (inc (last-log-index raft-state))]))})
         (assoc-in [:timer :next-timeout] (+ now period))
         ;; TODO: this is a departure from strict raft
-        (assoc-in [:raft-state :log]
-                  (into {} (for [[index entry] (:log (:raft-state state))]
-                             (if (> index commit-index)
-                               [index (assoc entry :term current-term)]
-                               [index entry]))))
+        (update-in [:raft-state] rewrite-terms commit-index current-term)
         (publish (broadcast node-set
                             {:type :append-entries
                              :term current-term
@@ -380,8 +347,6 @@
     {:keys [current-term node-type commit-index node-set]
      :as raft-state} :raft-state}))
 
-(require 'clojure.tools.logging)
-
 ;; TODO: rate limit this rule
 (def update-followers
   (rule
@@ -399,13 +364,12 @@
                    :term current-term
                    :leader-id id
                    :prev-log-index (max 0 (dec next-index))
-                   :prev-log-term (or (:term (get (:log raft-state)
-                                                  (dec next-index)))
+                   :prev-log-term (or (:term (log-entry-of raft-state (dec next-index)))
                                       0)
                    :entries (for [index (range (max 0 (dec next-index))
                                                (inc next-index))
                                   :when (not (zero? index))]
-                              (get (:log raft-state) index))
+                              (log-entry-of raft-state index))
                    :leader-commit commit-index
                    :from id})))
    {:as state

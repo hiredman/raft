@@ -178,7 +178,7 @@
     (try-try-again
      {:decay :exponential
       :sleep 100
-      :tries 6}
+      :tries 4}
      (fn []
        (log/trace "await-applied body")
        (let [r (for [node nodes
@@ -217,8 +217,8 @@
   (let [id (java.util.UUID/randomUUID)]
     (try
       (try-try-again
-       {:sleep 10
-        :tries 100}
+       {:sleep 100
+        :tries 5}
        (fn []
          (let [leader (stable-leader? nodes 1)]
            (log/trace "raft-write" key value (:id leader))
