@@ -356,6 +356,8 @@ form that the value will be bound to in both the head and the body."
     {:keys [node-type node-set current-term commit-index] :as raft-state}
     :raft-state}))
 
+;; TODO: need a test to ensure that the leaders last-log-index is
+;; considered when deciding to advance the commit index
 (def leader-receive-command
   (rule
    (and (= node-type :leader)
@@ -366,8 +368,12 @@ form that the value will be bound to in both the head and the body."
        ;; (log-trace "commit-index" commit-index)
        (consume-message)
        (update-in [:raft-state] add-to-log (assoc message
-                                             :term current-term)))
+                                             :term current-term))
+       (as-> state
+             (assoc-in state [:raft-leader-state :match-index id]
+                       (last-log-index (:raft-state state)))))
    {:as state
+    :keys [id]
     {{:as message message-type :type} :message} :io
     {:keys [match-index]} :raft-leader-state
     {:keys [current-term node-type commit-index node-set]
