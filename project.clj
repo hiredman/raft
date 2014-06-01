@@ -10,4 +10,5 @@
                                   [robert/bruce "0.7.1"]
                                   [ch.qos.logback/logback-classic "1.0.9"]
                                   [ch.qos.logback/logback-core "1.0.9"]
-                                  [org.slf4j/jcl-over-slf4j "1.7.2"]]}})
+                                  [org.slf4j/jcl-over-slf4j "1.7.2"]
+                                  [org.clojure/test.check "0.5.8"]]}})
