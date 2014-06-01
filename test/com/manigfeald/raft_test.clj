@@ -34,41 +34,6 @@
   (doseq [i nodes]
     (future-cancel (:future i))))
 
-;; ;; (deftest test-read-operations
-;; ;;   (let [leader (chan (dropping-buffer 2))
-;; ;;         [leaders nodes commited value] (f 3 leader)]
-;; ;;     (try
-;; ;;       (testing "elect leader"
-;; ;;         (is (stable-leader? nodes 3)))
-;; ;;       (let [leader (first (vals @leaders))
-;; ;;             c (chan 1)]
-;; ;;         (doseq [node nodes
-;; ;;                 :when (= leader (:id node))]
-;; ;;           (>!! (:in node) {:type :operation
-;; ;;                            :op :write
-;; ;;                            :key "hello"
-;; ;;                            :value "world"
-;; ;;                            :operation-type :write
-;; ;;                            :serial 1})
-;; ;;           (>!! (:in node) {:type :operation
-;; ;;                            :op :write
-;; ;;                            :key "hello"
-;; ;;                            :value "bob"
-;; ;;                            :operation-type :write
-;; ;;                            :serial 2})
-;; ;;           (>!! (:in node) {:type :operation
-;; ;;                            :op :read
-;; ;;                            :key "hello"
-;; ;;                            :operation-type :read
-;; ;;                            :serial 3})
-;; ;;           (>!! (:in node) {:type :await
-;; ;;                            :callback (fn [{:keys [value]}]
-;; ;;                                        (>!! c value))
-;; ;;                            :serial 3}))
-;; ;;         (is (= (v c (* 1000 60) :timeout) "bob")))
-;; ;;       (finally
-;; ;;         (shut-it-down! nodes)))))
-
 ;; (deftest test-kill-node
 ;;   (dotimes [i 8]
 ;;     (let [n (inc (* (inc i) 2))
@@ -226,22 +191,30 @@
           (log/trace (-> node :raft deref)))
         (throw e)))))
 
-;; (defn raft-read [nodes key]
-;;   (loop [id (java.util.UUID/randomUUID)
-;;          leader (stable-leader?* nodes 1)]
-;;     (log/trace "raft-read")
-;;     (if (not leader)
-;;       (recur nodes key)
-;;       (do
-;;         (>!! (:in leader) {:type :operation
-;;                            :op :read
-;;                            :key key
-;;                            :operation-type :read
-;;                            :serial id})
-;;         (let [r (await-applied nodes id 10 :dunno)]
-;;           (if (= r :dunno)
-;;             (recur id (stable-leader?* nodes 1))
-;;             r))))))
+(defn raft-read [nodes key]
+  (let [id (java.util.UUID/randomUUID)]
+    (try
+      (try-try-again
+       {:sleep 100
+        :tries 5}
+       (fn []
+         (if-let [leader (stable-leader? nodes 1)]
+           (do
+             (log/trace "raft-read" key (:id leader))
+             (>!! (:commands leader) {:type :operation
+                                      :payload {:op :read
+                                                :key key}
+                                      :operation-type ::bogon
+                                      :serial id})
+             (if (= :dunno (await-applied nodes id :dunno))
+               (throw (Exception. "write failed?"))
+               (:return (rlog/entry-with-serial (:log (:raft-state (deref (:raft leader))))
+                                                id))))
+           (throw (Exception. "write failed? missing leader")))))
+      (catch Exception e
+        (doseq [node nodes]
+          (log/trace (-> node :raft deref)))
+        (throw e)))))
 
 (deftest test-leader-election
   (let [node-ids-and-channels (into {} (for [i (range 3)]
@@ -290,6 +263,23 @@
         (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
       (finally
         (shut-it-down! nodes)))))
+
+(deftest test-read-operations
+  (let [node-ids-and-channels (into {} (for [i (range 5)]
+                                         [i (chan (sliding-buffer 10))]))
+        cluster (reduce #(add-node % (key %2) (val %2))
+                        (->ChannelCluster) node-ids-and-channels)
+        nodes (doall (for [[node-id in] node-ids-and-channels]
+                       (raft-obj in node-id cluster)))]
+    (try
+      (testing "elect leader"
+        (is (stable-leader? nodes 5)))
+      (raft-write nodes "hello" "world")
+      (is (= "world" (raft-read nodes "hello")))
+      (finally
+        (shut-it-down! nodes)))))
+
+
 
 ;; (deftest test-stress
 ;;   (let [node-ids-and-channels (into {} (for [i (range 3)]
