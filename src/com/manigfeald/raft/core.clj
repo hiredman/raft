@@ -76,7 +76,10 @@ most(all?) com.manigfeald.raft* namespaces"
                    :when (not= (:target message) (:id state))]
                message)))
 
-(defn log-contains? [raft-state log-term log-index]
+(defn log-contains?
+  "does the log in this raft-state contain an entry with the given
+  term and index"
+  [raft-state log-term log-index]
   (or (and (zero? log-term)
            (zero? log-index))
       (log/log-contains? (:log raft-state) log-term log-index)))
@@ -97,6 +100,8 @@ most(all?) com.manigfeald.raft* namespaces"
   (>= votes (inc (Math/floor (/ total 2.0)))))
 
 (defn possible-new-commit
+  "is there a log index that is greater than the current commit-index
+  and a majority of nodes have a copy of it"
   [commit-index raft-state match-index node-set current-term]
   (first (sort (for [[n c] (frequencies
                             (for [[index term] (log/indices-and-terms
@@ -120,10 +125,17 @@ most(all?) com.manigfeald.raft* namespaces"
              {:level :trace
               :message (apply print-str (:id state) message)}))
 
-(defn serial-exists? [raft-state serial]
+(defn serial-exists?
+  "does an entry with the given serial exist in the log in the
+  raft-state?"
+  [raft-state serial]
   (boolean (log/entry-with-serial (:log raft-state) serial)))
 
-(defn add-to-log [raft-state operation]
+(defn add-to-log
+  "add the given operation to the log in the raft-state with the next
+  index, as long as an entry with that serial number doesn't already
+  exist in the log"
+  [raft-state operation]
   {:pre [(contains? operation :operation-type)
          (contains? operation :payload)
          (contains? operation :term)
@@ -154,7 +166,9 @@ most(all?) com.manigfeald.raft* namespaces"
 (defn log-count [raft-state]
   (log/log-count (:log raft-state)))
 
-(defn empty-log []
+(defn empty-log
+  "create an empty thing that satisfies the RaftLog protocol"
+  []
   (com.manigfeald.raft.log.LogChecker. () {}))
 
 (defn reject-append-entries [state leader-id current-term id]
