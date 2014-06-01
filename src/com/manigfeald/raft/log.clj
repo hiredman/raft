@@ -3,15 +3,24 @@
   need at least two implementations for an abstraction")
 
 (defprotocol RaftLog
-  (log-contains? [log log-term log-index])
-  (last-log-index [log])
-  (last-log-term [log])
-  (indices-and-terms [log])
-  (add-to-log [log index entry])
+  (log-contains? [log log-term log-index]
+    "does the log contain an entry with the given term and index")
+  (last-log-index [log]
+    "what is the index of the last entry in the log")
+  (last-log-term [log]
+    "what is the term of the last entry in the log")
+  (indices-and-terms [log]
+    "a seq of [index term] pairs from the log")
+  (add-to-log [log index entry]
+    "add an entry to the log with a given index")
   ;; for strict "raft" make this operation a no op
-  (rewrite-terms-after [log index new-term])
-  (log-entry-of [log index])
-  (entry-with-serial [log serial]))
+  (rewrite-terms-after [log index new-term]
+    "associated the given new term with every entry in the log after
+    the given index")
+  (log-entry-of [log index]
+    "return the log entry with the given index or nil")
+  (entry-with-serial [log serial]
+    "return the log entry associated with the given serial or nil"))
 
 (defprotocol Counted
   (log-count [log]))
@@ -39,16 +48,18 @@
     (for [entry log]
       [(:index entry) (:term entry)]))
   (add-to-log [log index entry]
-    (conj (doall (for [entry log
-                       :when (not= index (:index entry))]
-                   entry))
-          (assoc entry
-            :index index)))
+    (sort-by #(- 0 (:index %))
+             (conj (doall (for [entry log
+                                :when (not= index (:index entry))]
+                            entry))
+                   (assoc entry
+                     :index index))))
   (rewrite-terms-after [log index new-term]
-    (for [entry log]
-      (if (> (:index entry) index)
-        (assoc entry :term new-term)
-        entry)))
+    (sort-by #(- 0 (:index %))
+             (for [entry log]
+               (if (> (:index entry) index)
+                 (assoc entry :term new-term)
+                 entry))))
   (log-entry-of [log needle-index]
     (first
      (for [{:keys [index] :as entry} log
