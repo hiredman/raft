@@ -13,8 +13,9 @@ form that the value will be bound to in both the head and the body."
   clojure.lang.IFn
   (invoke [this arg]
     (if (head arg)
-      (let [r (body arg)]
-        [true (update-in r [:applied-rules] conj this)])
+      (let [r (binding [*log-context* (:name this)]
+                (body arg))]
+        [true r #_(update-in r [:applied-rules] conj this)])
       [false arg])))
 
 (defrecord CompoundRule [head subrules]
@@ -414,10 +415,15 @@ form that the value will be bound to in both the head and the body."
 
 (def update-commit
   (rule
+   :update-commit
    (and (= :leader node-type)
         (possible-new-commit commit-index raft-state match-index node-set
                              current-term))
    (-> state
+       (log-trace "update-commit"
+                  (possible-new-commit
+                   commit-index raft-state match-index node-set current-term)
+                  (:match-index (:raft-leader-state state)))
        (assoc-in [:raft-state :commit-index]
                  (possible-new-commit
                   commit-index raft-state match-index node-set current-term)))

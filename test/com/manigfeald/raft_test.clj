@@ -1,4 +1,4 @@
-(ns com.manigfeald.raft-test
+>(ns com.manigfeald.raft-test
   (:require [clojure.test :refer :all]
             [com.manigfeald.raft :refer :all]
             [clojure.core.async :refer [alt!! timeout <!! >!! chan
@@ -130,10 +130,13 @@
                         _ (doseq [msg (:out-queue (:io new-state))]
                             (assert (not= :broadcast (:target msg)))
                             (send-to cluster (:target msg) msg))
-                        ;; _ (doseq [{:keys [level message] :as m}
-                        ;;           (:running-log new-state)]
-                        ;;     (case level
-                        ;;       :trace (log/trace message)))
+                        _ (doseq [{:keys [level message context] :as m}
+                                  (:running-log new-state)]
+                            (when (= context :update-commit)
+                              (log/trace message))
+                            #_(case level
+                              :trace (log/trace message
+                                                :context context)))
                         new-state (update-in new-state [:io :out-queue] empty)
                         new-state (update-in new-state [:running-log] empty)
                         new-state (update-in new-state [:applied-rules] empty)]
@@ -168,7 +171,7 @@
                   leader)
            f (frequencies lead)
            [lead c] (last (sort-by second f))]
-       (log/trace "stable-leader?" n (into {} (for [[a b] f]
+       #_(log/trace "stable-leader?" n (into {} (for [[a b] f]
                                                 [(-> a :raft deref :id) b])))
        (if (and lead
                 (>= c n))
@@ -182,7 +185,7 @@
       :sleep 100
       :tries 4}
      (fn []
-       (log/trace "await-applied body")
+       #_(log/trace "await-applied body")
        (let [r (for [node nodes
                      :let [{:keys [raft]} node
                            v (deref raft)
@@ -198,25 +201,6 @@
            (throw (Exception.))))))
     (catch Exception e
       dunno)))
-
-;; TODO: may not be required
-(defn await-n-applied [nodes n]
-  (let [leader (stable-leader? nodes 1)
-        leader-commit (-> leader :raft deref :raft-state :commit-index)]
-    (loop [i 100]
-      (Thread/sleep 1000)
-      (if (zero? i)
-        false
-        (let [lead (for [node nodes
-                         :let [{:keys [raft]} node
-                               v (deref raft)
-                               {{:keys [commit-index]} :raft-state} v]
-                         :when (>= commit-index leader-commit)]
-                     commit-index)]
-          (log/trace "await-n-applied" n leader-commit)
-          (if (>= (count lead) n)
-            lead
-            (recur (dec i))))))))
 
 (defn raft-write [nodes key value]
   (let [id (java.util.UUID/randomUUID)]
@@ -300,16 +284,10 @@
       (testing "elect leader"
         (is (stable-leader? nodes 5)))
       (raft-write nodes "hello" "world")
-      ;; (await-n-applied nodes 5)
       (doseq [node nodes
               :let [{:keys [raft]} node
                     {{{:strs [hello]} :value} :raft-state} (deref raft)]]
         (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
-      ;; (doseq [node nodes
-      ;;         :let [{:keys [raft]} node
-      ;;               x (deref raft)]]
-      ;;   (println)
-      ;;   (prn x))
       (finally
         (shut-it-down! nodes)))))
 

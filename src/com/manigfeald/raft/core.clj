@@ -114,6 +114,8 @@ most(all?) com.manigfeald.raft* namespaces"
                      :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
                  n))))
 
+(def ^:dynamic *log-context*)
+
 (defn log-trace
   "given a state and a log message (as a seq of strings) append the
   message to the log at the trace level"
@@ -123,6 +125,7 @@ most(all?) com.manigfeald.raft* namespaces"
   (update-in state [:running-log]
              (fnil conj PersistentQueue/EMPTY)
              {:level :trace
+              :context *log-context*
               :message (apply print-str (:id state) message)}))
 
 (defn serial-exists?
