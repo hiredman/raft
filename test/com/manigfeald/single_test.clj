@@ -5,11 +5,11 @@
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]))
 
-(defn n-rafts [n]
+(defn n-rafts [n delays]
   (for [i (range n)]
     {:id i
      :in-queue clojure.lang.PersistentQueue/EMPTY
-     :raft (raft i (set (range n)) (->Timer 0 0 (+ 50 (rand-int 50))))}))
+     :raft (raft i (set (range n)) (->Timer 0 0 (get delays i)))}))
 
 (defn step-n-rafts [rafts instructions]
   (let [messages (group-by :target (mapcat (comp :out-queue :io :raft) rafts))
@@ -47,16 +47,16 @@
   (gen/elements [:drop-message :receive-message :stall :no-message]))
 
 (defn programs [machines]
-  (gen/vector (apply gen/tuple (repeat machines instructions))
-              5000))
+  (fn [program-size]
+    (gen/vector (apply gen/tuple (repeat machines instructions))
+                program-size)))
 
-;; (def instructions-for-three-machines
-;;   (gen/vector (gen/tuple instructions instructions instructions)
-;;               5000))
-
-(def zero-or-one-leader
+(def zero-or-one-leader-per-term
   (prop/for-all
-   [program (programs 3)]
+   [delays (gen/tuple gen/s-pos-int
+                      gen/s-pos-int
+                      gen/s-pos-int)
+    program (gen/bind gen/nat (programs 3))]
    (every?
     #(or (= % 0) (= % 1))
     (for [{:keys [rafts]} (take-while
@@ -68,15 +68,19 @@
                                  :rafts (step-n-rafts rafts
                                                       (first program))}))
                             {:program program
-                             :rafts (n-rafts 3)}))]
-      (count (for [{{{:keys [node-type]} :raft-state} :raft} rafts
-                   :let [_ (assert node-type node-type)]
-                   :when (= :leader node-type)]
-               nil))))))
+                             :rafts (n-rafts 3 delays)}))
+          n (vals (frequencies
+                   (for [{{{:keys [node-type current-term]} :raft-state} :raft}
+                         rafts
+                       :let [_ (assert node-type node-type)]
+                       :when (= :leader node-type)]
+                   current-term)))]
+      n))))
 
 (comment
 
 
-(tc/quick-check 200 zero-or-one-leader)
+  (tc/quick-check 10 zero-or-one-leader-per-term)
+
 
   )

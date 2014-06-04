@@ -33,6 +33,7 @@ most(all?) com.manigfeald.raft* namespaces"
 (defn set-return-value
   "set the return value of an operation in the log"
   [raft-state index value]
+  {:post [(contains? (log-entry-of % index) :return)]}
   (let [entry (log-entry-of raft-state index)]
     (insert-entries raft-state [(assoc entry :return value)])))
 
@@ -56,6 +57,9 @@ most(all?) com.manigfeald.raft* namespaces"
         (let [[return new-value] (apply-operation (:value raft-state)
                                                   (:payload op))
               new-state (set-return-value raft-state (:index op) return)]
+          (assert (:index op))
+          (assert (= return (:return (log-entry-of new-state (:index op))))
+                  [op (log-entry-of new-state (:index op))])
           (recur (assoc new-state
                    :value new-value
                    :last-applied new-last)))))
@@ -84,7 +88,9 @@ most(all?) com.manigfeald.raft* namespaces"
            (zero? log-index))
       (log/log-contains? (:log raft-state) log-term log-index)))
 
-(defn last-log-index [raft-state]
+(defn last-log-index
+  "what is the index of the latest log entry in the raft-state"
+  [raft-state]
   (biginteger (log/last-log-index (:log raft-state))))
 
 (defn last-log-term [raft-state]
@@ -92,11 +98,17 @@ most(all?) com.manigfeald.raft* namespaces"
           (not (neg? %))]}
   (biginteger (log/last-log-term (:log raft-state))))
 
-(defn broadcast [node-set msg]
+(defn broadcast
+  "replicate the given message once for every node in the list of
+  nodes"
+  [node-set msg]
   (for [node node-set]
     (assoc msg :target node)))
 
-(defn enough-votes? [total votes]
+(defn enough-votes?
+  "given a total number of nodes is the number of votes sufficient to
+  elect a leader"
+  [total votes]
   (>= votes (inc (Math/floor (/ total 2.0)))))
 
 (defn possible-new-commit
@@ -114,7 +126,9 @@ most(all?) com.manigfeald.raft* namespaces"
                      :when (>= c (inc (Math/floor (/ (count node-set) 2))))]
                  n))))
 
-(def ^:dynamic *log-context*)
+(def ^:dynamic *log-context*
+  "a dynamic context used for logging"
+  nil)
 
 (defn log-trace
   "given a state and a log message (as a seq of strings) append the
@@ -152,7 +166,12 @@ most(all?) com.manigfeald.raft* namespaces"
                operation)))
 
 (defn insert-entries [raft-state entries]
-  {:pre [(every? map? entries)]}
+  {:pre [(every? map? entries)]
+   :post [(every?
+           (fn [entry]
+             (= (log-entry-of % (:index entry))
+                entry))
+           entries)]}
   (assoc raft-state
     :log (reduce
           #(log/add-to-log %1 (biginteger (:index %2)) %2)
@@ -172,7 +191,8 @@ most(all?) com.manigfeald.raft* namespaces"
 (defn empty-log
   "create an empty thing that satisfies the RaftLog protocol"
   []
-  (com.manigfeald.raft.log.LogChecker. () {}))
+  {}
+  #_(com.manigfeald.raft.log.LogChecker. () {}))
 
 (defn reject-append-entries [state leader-id current-term id]
   (-> state

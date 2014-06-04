@@ -6,7 +6,7 @@
 
 ;; TODO: document log entry format
 ;; TODO: knossos
-;; TODO: strict
+;; TODO: strict mode
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied

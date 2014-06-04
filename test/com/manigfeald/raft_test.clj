@@ -97,9 +97,7 @@
                             (send-to cluster (:target msg) msg))
                         _ (doseq [{:keys [level message context] :as m}
                                   (:running-log new-state)]
-                            (when (= context :update-commit)
-                              (log/trace message))
-                            #_(case level
+                            (case level
                               :trace (log/trace message
                                                 :context context)))
                         new-state (update-in new-state [:io :out-queue] empty)
@@ -111,6 +109,8 @@
                       (recur new-state)))))
               (catch InterruptedException _)
               (catch Throwable t
+                (locking #'*out*
+                  (.printStackTrace t))
                 (log/error t "whoops"))))]
     {:in in
      :id id
@@ -161,7 +161,8 @@
                      :when (>= last-applied (:index entry))]
                  (:return entry))]
          ;; pass in n?
-         (if (= (count nodes) (count r))
+         (if (and (= (count nodes) (count r))
+                  (apply = r))
            (first r)
            (throw (Exception.))))))
     (catch Exception e
@@ -196,7 +197,7 @@
     (try
       (try-try-again
        {:sleep 100
-        :tries 5}
+        :tries 6}
        (fn []
          (if-let [leader (stable-leader? nodes 1)]
            (do
@@ -206,11 +207,11 @@
                                                 :key key}
                                       :operation-type ::bogon
                                       :serial id})
-             (if (= :dunno (await-applied nodes id :dunno))
-               (throw (Exception. "write failed?"))
-               (:return (rlog/entry-with-serial (:log (:raft-state (deref (:raft leader))))
-                                                id))))
-           (throw (Exception. "write failed? missing leader")))))
+             (let [r (await-applied nodes id :dunno)]
+               (if (= :dunno r)
+                 (throw (Exception. "read failed?"))
+                 r)))
+           (throw (Exception. "read failed? missing leader")))))
       (catch Exception e
         (doseq [node nodes]
           (log/trace (-> node :raft deref)))
@@ -275,7 +276,11 @@
       (testing "elect leader"
         (is (stable-leader? nodes 5)))
       (raft-write nodes "hello" "world")
-      (is (= "world" (raft-read nodes "hello")))
+      (is (= "world" (raft-read nodes "hello"))
+          (let [leader (stable-leader? nodes 5)
+                l (:log (:raft-state (deref (:raft leader))))]
+            [leader (for [[index] (rlog/indices-and-terms l)]
+                      (rlog/log-entry-of l index))]))
       (finally
         (shut-it-down! nodes)))))
 

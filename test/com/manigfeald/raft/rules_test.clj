@@ -5,6 +5,8 @@
             [com.manigfeald.raft.core :refer :all])
   (:import (clojure.lang PersistentQueue)))
 
+;; TODO: when applied always have a :return
+
 ;; TODO: these tests really suck
 
 (deftest t-keep-up-apply

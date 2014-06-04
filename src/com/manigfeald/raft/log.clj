@@ -23,7 +23,8 @@
     "return the log entry associated with the given serial or nil"))
 
 (defprotocol Counted
-  (log-count [log]))
+  (log-count [log]
+    "return the count of entries in the log"))
 
 (extend-type clojure.lang.ISeq
   Counted
@@ -48,12 +49,16 @@
     (for [entry log]
       [(:index entry) (:term entry)]))
   (add-to-log [log index entry]
-    (sort-by #(- 0 (:index %))
-             (conj (doall (for [entry log
-                                :when (not= index (:index entry))]
-                            entry))
-                   (assoc entry
-                     :index index))))
+    (let [r (sort-by #(- 0 (:index %))
+                     (conj (for [entry log
+                                 :when (not= index (:index entry))]
+                             entry)
+                           (assoc entry
+                             :index index)))]
+      (assert (some #{(assoc entry
+                        :index index)}
+                    r))
+      r))
   (rewrite-terms-after [log index new-term]
     (sort-by #(- 0 (:index %))
              (for [entry log]
