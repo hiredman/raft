@@ -90,12 +90,7 @@ form that the value will be bound to in both the head and the body."
   (rule
    (> commit-index last-applied)
    (-> state
-       (update-in [:raft-state] advance-applied-to-commit)
-       (as-> n
-             (log-trace n "advancing applied to commit"
-                        (:last-applied (:raft-state state))
-                        (:last-applied (:raft-state n))
-                        (:commit-index (:raft-state n)))))
+       (update-in [:raft-state] advance-applied-to-commit))
    {:as state
     {:keys [commit-index last-applied]} :raft-state}))
 
@@ -435,7 +430,7 @@ form that the value will be bound to in both the head and the body."
    (and (= node-type :leader)
         (= message-type :operation))
    (-> state
-       (log-trace "received command serial" message)
+       (log-trace "received command serial" (:serial message))
        ;; (log-trace (:raft-leader-state state))
        ;; (log-trace "commit-index" commit-index)
        (consume-message)

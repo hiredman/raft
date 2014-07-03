@@ -198,7 +198,6 @@
 (defn applied [nodes serial-w else]
   (let [greatest-term (apply max (for [node nodes]
                                    (-> node :raft deref :raft-state :current-term)))]
-    (log/trace "applied" greatest-term)
     (or (first (for [node nodes
                      :let [{:keys [raft]} node
                            v (deref raft)
@@ -208,9 +207,7 @@
                      :let [entry (rlog/entry-with-serial log serial-w)]
                      :when entry
                      :when (>= last-applied (:index entry))]
-                 (do
-                   (log/trace "applied from" (:id node))
-                   entry)))
+                 entry))
         else)))
 
 (defn raft-write-and-forget
@@ -228,10 +225,9 @@
 
 (defn raft-write [nodes key value]
   (let [id (java.util.UUID/randomUUID)]
-    (println "raft-write" id)
     (try-try-again
-     {:sleep 1000
-      :tries 60}
+     {:sleep 10
+      :tries 6000}
      (fn []
        (raft-write-and-forget nodes key value id)
        (when (= :dunno (applied nodes id :dunno))
@@ -247,11 +243,10 @@
 
 (defn raft-read [nodes key]
   (let [id (java.util.UUID/randomUUID)]
-    (println "raft-read" id)
     (try
       (try-try-again
-       {:sleep 1000
-        :tries 60}
+       {:sleep 10
+        :tries 6000}
        (fn []
          (with-leader nodes
            (fn [leader]
@@ -365,15 +360,11 @@
     (with-pings nodes
       (try
         (raft-write nodes :key 0)
-        (dotimes [i 3]
+        (dotimes [i 10]
           (log/trace "start")
           (let [victim (rand-nth nodes)]
             (log/trace "victim" (:id victim))
             (.acquire (:lock victim))
-            (Thread/sleep 1000)
-            (prn (into {} (for [node nodes]
-                            [(:id node) {:leader (-> node :raft deref :raft-state :leader-id)
-                                         :term (-> node :raft deref :raft-state :current-term)}])))
             (try
               (let [rv (raft-read nodes :key)]
                 (log/trace "read" rv)
