@@ -15,6 +15,26 @@ form that the value will be bound to in both the head and the body."
     (if (head arg)
       (let [r (binding [*log-context* (:name this)]
                 (body arg))]
+        (assert (or (zero? (:last-applied (:raft-state r)))
+                    (contains? (get (:log (:raft-state r))
+                                    (:last-applied (:raft-state r)))
+                               :return))
+                (with-out-str
+                  (prn "rule" this)
+                  (println "before:")
+                  (prn arg)
+                  (println "after:")
+                  (prn r)
+                  (println)))
+        (assert (>= (:commit-index (:raft-state r))
+                    (:last-applied (:raft-state r)))
+                (with-out-str
+                  (prn "rule" this)
+                  (println "before:")
+                  (prn arg)
+                  (println "after:")
+                  (prn r)
+                  (println)))
         [true r #_(update-in r [:applied-rules] conj this)])
       [false arg])))
 
@@ -70,7 +90,12 @@ form that the value will be bound to in both the head and the body."
   (rule
    (> commit-index last-applied)
    (-> state
-       (update-in [:raft-state] advance-applied-to-commit))
+       (update-in [:raft-state] advance-applied-to-commit)
+       (as-> n
+             (log-trace n "advancing applied to commit"
+                        (:last-applied (:raft-state state))
+                        (:last-applied (:raft-state n))
+                        (:commit-index (:raft-state n)))))
    {:as state
     {:keys [commit-index last-applied]} :raft-state}))
 
@@ -131,12 +156,61 @@ form that the value will be bound to in both the head and the body."
     (and (= message-term current-term)
          (log-contains? raft-state prev-log-term prev-log-index))
     (-> state
-        (update-in [:raft-state] insert-entries entries)
+        ((fn [s]
+           (assert (not (seq
+                         (for [[k v] (:log (:raft-state s))
+                               :when (>= (:last-applied (:raft-state s)) k)
+                               :when (not (contains? v :return))]
+                           v)))
+                   (pr-str ["before before"
+                            (:last-applied (:raft-state s))
+                            (for [[k v] (:log (:raft-state s))
+                                  :when (>= (:last-applied (:raft-state s)) k)
+                                  :when (not (contains? v :return))]
+                              v)]))
+           s))
+        ((fn [s]
+           (let [rs (with-meta (:raft-state s)
+                      {:id id
+                       :message-term message-term
+                       :current-term current-term
+                       :leader-id leader-id})]
+             (assoc s
+               :raft-state (insert-entries rs entries)))))
+        #_(update-in [:raft-state] insert-entries entries)
+        ((fn [s]
+           (assert (not (seq
+                         (for [[k v] (:log (:raft-state s))
+                               :when (>= (:last-applied (:raft-state s)) k)
+                               :when (not (contains? v :return))]
+                           v)))
+                   (pr-str ["before"
+                            (:last-applied (:raft-state s))
+                            (for [[k v] (:log (:raft-state s))
+                                  :when (>= (:last-applied (:raft-state s)) k)
+                                  :when (not (contains? v :return))]
+                              v)]))
+           s))
         (accept-append-entries leader-id current-term id)
+        ((fn [s]
+           (assert (not (seq
+                         (for [[k v] (:log (:raft-state s))
+                               :when (>= (:last-applied (:raft-state s)) k)
+                               :when (not (contains? v :return))]
+                           v)))
+                   (pr-str ["after"
+                            (:last-applied (:raft-state s))
+                            (for [[k v] (:log (:raft-state s))
+                                  :when (>= (:last-applied (:raft-state s)) k)
+                                  :when (not (contains? v :return))]
+                              v)]))
+           s))
         (as-> n
-              (assoc-in n [:raft-state :commit-index]
-                        (min leader-commit
-                             (last-log-index (:raft-state n))))))
+              (if (> leader-commit commit-index)
+                (assoc-in n [:raft-state :commit-index]
+                          (min leader-commit
+                               (last-log-index (:raft-state n))))
+                n)))
     {:as state
      :keys [id]
      {{prev-log-index :prev-log-index
@@ -145,7 +219,7 @@ form that the value will be bound to in both the head and the body."
        entries :entries
        leader-id :leader-id
        leader-commit :leader-commit} :message} :io
-     {:keys [current-term node-type] :as raft-state} :raft-state})
+     {:keys [current-term node-type commit-index] :as raft-state} :raft-state})
    {{{message-type :type
       :as message} :message} :io
       {:keys [node-type]} :raft-state}))
@@ -158,11 +232,8 @@ form that the value will be bound to in both the head and the body."
     :success
     (and (or (= voted-for candidate-id)
              (nil? voted-for))
-         (or (log-contains? raft-state last-log-term last-log-index)
-             ;; another departure from strict raft
-             (and (:term (log-entry-of raft-state last-log-index))
-                  (> last-log-term
-                     (:term (log-entry-of raft-state last-log-index))))))
+         #_(log-contains? raft-state last-log-term last-log-index)
+         (>= last-log-index (com.manigfeald.raft.core/last-log-index raft-state)))
     (-> state
         (log-trace "votes for" candidate-id "in" current-term)
         (consume-message)
@@ -263,7 +334,7 @@ form that the value will be bound to in both the head and the body."
                                [node (inc (last-log-index raft-state))]))})
         (assoc-in [:timer :next-timeout] (+ now period))
         ;; TODO: this is a departure from strict raft
-        (update-in [:raft-state] rewrite-terms commit-index current-term)
+        #_(update-in [:raft-state] rewrite-terms commit-index current-term)
         (publish (broadcast node-set
                             {:type :append-entries
                              :term current-term
@@ -364,7 +435,7 @@ form that the value will be bound to in both the head and the body."
    (and (= node-type :leader)
         (= message-type :operation))
    (-> state
-       (log-trace "received command serial" (:serial message))
+       (log-trace "received command serial" message)
        ;; (log-trace (:raft-leader-state state))
        ;; (log-trace "commit-index" commit-index)
        (consume-message)
@@ -403,7 +474,7 @@ form that the value will be bound to in both the head and the body."
                    :entries (for [index (range (max 0N (dec next-index))
                                                (inc next-index))
                                   :when (not (zero? index))]
-                              (log-entry-of raft-state index))
+                              (dissoc (log-entry-of raft-state index) :return))
                    :leader-commit commit-index
                    :from id})))
    {:as state

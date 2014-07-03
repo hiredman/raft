@@ -1,13 +1,13 @@
 >(ns com.manigfeald.raft-test
-  (:require [clojure.test :refer :all]
-            [com.manigfeald.raft :refer :all]
-            [clojure.core.async :refer [alt!! timeout <!! >!! chan
-                                        sliding-buffer dropping-buffer
-                                        close!]]
-            [clojure.tools.logging :as log]
-            [clojure.pprint :as pp]
-            [robert.bruce :refer [try-try-again]]
-            [com.manigfeald.raft.log :as rlog]))
+   (:require [clojure.test :refer :all]
+             [com.manigfeald.raft :refer :all]
+             [clojure.core.async :refer [alt!! timeout <!! >!! chan
+                                         sliding-buffer dropping-buffer
+                                         close!]]
+             [clojure.tools.logging :as log]
+             [clojure.pprint :as pp]
+             [robert.bruce :refer [try-try-again]]
+             [com.manigfeald.raft.log :as rlog]))
 
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
@@ -59,13 +59,14 @@
 (defn raft-obj [in id cluster]
   (let [s (atom nil)
         lock (java.util.concurrent.Semaphore. 1)
-        commands (chan)
+        commands (chan (sliding-buffer 2))
         f (future
             (try
               (loop [state (raft id (conj (set (list-nodes cluster)) id)
                                  (->Timer (System/currentTimeMillis)
                                           (System/currentTimeMillis)
                                           1500))]
+                (.acquire lock)
                 (let [state (cond-> state
                                     (= :leader (:node-type (:raft-state state)))
                                     (assoc-in [:timer :period] 300)
@@ -81,8 +82,7 @@
                                ;; (timeout 100) ([_] nil)
                                :default nil
                                :priority true)]
-                  (let [_ (.acquire lock)
-                        new-state (try
+                  (let [new-state (try
                                     (-> state
                                         (assoc-in [:timer :now]
                                                   (System/currentTimeMillis))
@@ -137,18 +137,31 @@
            f (frequencies lead)
            [lead c] (last (sort-by second f))]
        #_(log/trace "stable-leader?" n (into {} (for [[a b] f]
-                                                [(-> a :raft deref :id) b])))
+                                                  [(-> a :raft deref :id) b])))
        (if (and lead
                 (>= c n))
          lead
          (throw (Exception. "failed to get a leader")))))))
 
+(defn with-leader [nodes action]
+  (let [[[_ leader]] (sort-by first (for [node nodes
+                                          :let [{:keys [raft]} node
+                                                v (deref raft)
+                                                {{:keys [leader-id]} :raft-state} v]
+                                          :when leader-id
+                                          leader nodes
+                                          :when (= leader-id (:id leader))]
+                                      [(* -1 (:current-term (:raft-state v)))
+                                       leader]))]
+    (when leader
+      (action leader))
+    nil))
+
 (defn await-applied [nodes serial-w dunno]
   (try
     (try-try-again
-     {:decay :exponential
-      :sleep 100
-      :tries 4}
+     {:sleep 100
+      :tries 60}
      (fn []
        #_(log/trace "await-applied body")
        (let [r (for [node nodes
@@ -159,7 +172,8 @@
                      :let [entry (rlog/entry-with-serial log serial-w)]
                      :when entry
                      :when (>= last-applied (:index entry))]
-                 (:return entry))]
+                 (assoc entry
+                   :last-applied last-applied))]
          ;; pass in n?
          (if (and (= (count nodes) (count r))
                   (apply = r))
@@ -168,54 +182,104 @@
     (catch Exception e
       dunno)))
 
+(defn last-applied [nodes]
+  (frequencies
+   (doall (for [node nodes]
+            (-> node :raft deref :raft-state :last-applied)))))
+
+(defn index [nodes serial]
+  (frequencies
+   (for [node nodes
+         :let [log (-> node :raft deref :raft-state :log)
+               entry (rlog/entry-with-serial log serial)]
+         :when entry]
+     (:index entry))))
+
+(defn applied [nodes serial-w else]
+  (let [greatest-term (apply max (for [node nodes]
+                                   (-> node :raft deref :raft-state :current-term)))]
+    (log/trace "applied" greatest-term)
+    (or (first (for [node nodes
+                     :let [{:keys [raft]} node
+                           v (deref raft)
+                           {{:keys [last-applied log]} :raft-state} v]
+                     :when (= (:current-term (:raft-state v)) greatest-term)
+                     :when log
+                     :let [entry (rlog/entry-with-serial log serial-w)]
+                     :when entry
+                     :when (>= last-applied (:index entry))]
+                 (do
+                   (log/trace "applied from" (:id node))
+                   entry)))
+        else)))
+
+(defn raft-write-and-forget
+  ([nodes key value]
+     (raft-write-and-forget nodes key value (java.util.UUID/randomUUID)))
+  ([nodes key value id]
+     (with-leader nodes
+       (fn [leader]
+         (>!! (:commands leader) {:type :operation
+                                  :payload {:op :write
+                                            :key key
+                                            :value value}
+                                  :operation-type ::bogon
+                                  :serial id})))))
+
 (defn raft-write [nodes key value]
   (let [id (java.util.UUID/randomUUID)]
+    (println "raft-write" id)
+    (try-try-again
+     {:sleep 1000
+      :tries 60}
+     (fn []
+       (raft-write-and-forget nodes key value id)
+       (when (= :dunno (applied nodes id :dunno))
+         (throw (Exception.
+                 (with-out-str
+                   (println "write failed?")
+                   (println "key" key "value" value)
+                   (println)
+                   (doseq [node nodes]
+                     (-> node :raft deref prn)
+                     (println)
+                     (println))))))))))
+
+(defn raft-read [nodes key]
+  (let [id (java.util.UUID/randomUUID)]
+    (println "raft-read" id)
     (try
       (try-try-again
-       {:sleep 100
-        :tries 5}
+       {:sleep 1000
+        :tries 60}
        (fn []
-         (if-let [leader (stable-leader? nodes 1)]
-           (do
-             (log/trace "raft-write" key value (:id leader))
+         (with-leader nodes
+           (fn [leader]
              (>!! (:commands leader) {:type :operation
-                                      :payload {:op :write
-                                                :key key
-                                                :value value}
+                                      :payload {:op :read
+                                                :key key}
                                       :operation-type ::bogon
-                                      :serial id})
-             (when (= :dunno (await-applied nodes id :dunno))
-               (throw (Exception. "write failed?"))))
-           (throw (Exception. "write failed? missing leader")))))
+                                      :serial id})))
+         (let [r (applied nodes id :dunno)]
+           (if (= :dunno r)
+             (throw (Exception. "read failed?"))
+             (:return r)))))
       (catch Exception e
         (doseq [node nodes]
           (log/trace (-> node :raft deref)))
         (throw e)))))
 
-(defn raft-read [nodes key]
-  (let [id (java.util.UUID/randomUUID)]
-    (try
-      (try-try-again
-       {:sleep 100
-        :tries 6}
-       (fn []
-         (if-let [leader (stable-leader? nodes 1)]
-           (do
-             (log/trace "raft-read" key (:id leader))
-             (>!! (:commands leader) {:type :operation
-                                      :payload {:op :read
-                                                :key key}
-                                      :operation-type ::bogon
-                                      :serial id})
-             (let [r (await-applied nodes id :dunno)]
-               (if (= :dunno r)
-                 (throw (Exception. "read failed?"))
-                 r)))
-           (throw (Exception. "read failed? missing leader")))))
-      (catch Exception e
-        (doseq [node nodes]
-          (log/trace (-> node :raft deref)))
-        (throw e)))))
+(defmacro with-pings [nodes & body]
+  `(let [nodes# ~nodes
+         fut# (future
+                (while true
+                  (Thread/sleep 15000)
+                  (future
+                    (raft-write-and-forget nodes# "ping" "pong"))))]
+     (try
+       ~@body
+       (finally
+         (future-cancel fut#)))))
 
 (deftest test-leader-election
   (let [node-ids-and-channels (into {} (for [i (range 3)]
@@ -254,16 +318,17 @@
                         (->ChannelCluster) node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))]
-    (try
-      (testing "elect leader"
-        (is (stable-leader? nodes 5)))
-      (raft-write nodes "hello" "world")
-      (doseq [node nodes
-              :let [{:keys [raft]} node
-                    {{{:strs [hello]} :value} :raft-state} (deref raft)]]
-        (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
-      (finally
-        (shut-it-down! nodes)))))
+    (with-pings nodes
+      (try
+        (testing "elect leader"
+          (is (stable-leader? nodes 5)))
+        (raft-write nodes "hello" "world")
+        (doseq [node nodes
+                :let [{:keys [raft]} node
+                      {{{:strs [hello]} :value} :raft-state} (deref raft)]]
+          (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
+        (finally
+          (shut-it-down! nodes))))))
 
 (deftest test-read-operations
   (let [node-ids-and-channels (into {} (for [i (range 5)]
@@ -272,47 +337,65 @@
                         (->ChannelCluster) node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))]
-    (try
-      (testing "elect leader"
-        (is (stable-leader? nodes 5)))
-      (raft-write nodes "hello" "world")
-      (is (= "world" (raft-read nodes "hello"))
-          (let [leader (stable-leader? nodes 5)
-                l (:log (:raft-state (deref (:raft leader))))]
-            [leader (for [[index] (rlog/indices-and-terms l)]
-                      (rlog/log-entry-of l index))]))
-      (finally
-        (shut-it-down! nodes)))))
+    (with-pings nodes
+      (try
+        (testing "elect leader"
+          (is (stable-leader? nodes 5)))
+        (raft-write nodes "hello" "world")
+        (let [x (raft-read nodes "hello")]
+          (is (= "world" x)
+              (with-out-str
+                (prn x)
+                (println)
+                (doseq [node nodes]
+                  (prn (-> node :raft deref))
+                  (println)
+                  (println)))))
+        (finally
+          (shut-it-down! nodes))))))
 
-
-
-;; (deftest test-stress
-;;   (let [node-ids-and-channels (into {} (for [i (range 3)]
-;;                                          [i (chan (sliding-buffer 10))]))
-;;         cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
-;;                         node-ids-and-channels)
-;;         nodes (doall (for [[node-id in] node-ids-and-channels]
-;;                        (raft-obj in node-id cluster)))]
-;;     (try
-;;       (is (stable-leader?* nodes 3))
-;;       (raft-write nodes :key 0)
-;;       (dotimes [i 10]
-;;         (log/trace "writing" i)
-;;         (let [leader (stable-leader?* nodes 1)
-;;               victim (rand-nth nodes)
-;;               write-id (java.util.UUID/randomUUID)
-;;               read-id (java.util.UUID/randomUUID)]
-;;           (.acquire (:lock victim))
-;;           (try
-;;             (let [ii (raft-read nodes :key)]
-;;               (raft-write nodes :key (inc ii))
-;;               (is (= (inc ii) (raft-read nodes :key)))
-;;               (is (= i ii)))
-;;             (finally
-;;               (.release (:lock victim))))
-;;           (raft-read nodes :key)))
-;;       (finally
-;;         (shut-it-down! nodes)))))
+(deftest test-stress
+  (let [node-ids-and-channels (into {} (for [i (range 3)]
+                                         [i (chan (sliding-buffer 5))]))
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
+                        node-ids-and-channels)
+        nodes (doall (for [[node-id in] node-ids-and-channels]
+                       (raft-obj in node-id cluster)))
+        a (atom 0)]
+    (with-pings nodes
+      (try
+        (raft-write nodes :key 0)
+        (dotimes [i 3]
+          (log/trace "start")
+          (let [victim (rand-nth nodes)]
+            (log/trace "victim" (:id victim))
+            (.acquire (:lock victim))
+            (Thread/sleep 1000)
+            (prn (into {} (for [node nodes]
+                            [(:id node) {:leader (-> node :raft deref :raft-state :leader-id)
+                                         :term (-> node :raft deref :raft-state :current-term)}])))
+            (try
+              (let [rv (raft-read nodes :key)]
+                (log/trace "read" rv)
+                (when-not (= rv @a)
+                  (log/trace "FAILLLLLLL")
+                  (doseq [node (sort-by :id  nodes)
+                          :let [_ (log/trace "node" (:id node))
+                                {:keys [raft id]} node
+                                v (deref raft)]
+                          entry (sort-by :index (vals (:log (:raft-state v))))]
+                    (log/trace id "log entry" entry))
+                  (assert nil))
+                (is (= @a (raft-read nodes :key))
+                    (with-out-str
+                      (pp/pprint nodes))))
+              (swap! a inc)
+              (log/trace "writing" @a)
+              (raft-write nodes :key @a)
+              (finally
+                (.release (:lock victim))))))
+        (finally
+          (shut-it-down! nodes))))))
 
 (defmacro foo [exp & body]
   (when-not (eval exp)

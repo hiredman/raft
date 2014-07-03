@@ -35,7 +35,7 @@ most(all?) com.manigfeald.raft* namespaces"
   [raft-state index value]
   {:post [(contains? (log-entry-of % index) :return)]}
   (let [entry (log-entry-of raft-state index)]
-    (insert-entries raft-state [(assoc entry :return value)])))
+    (update-in raft-state [:log] log/add-to-log (:index entry) (assoc entry :return value))))
 
 ;; TODO: move add and remove node in to its own code
 (defn advance-applied-to-commit
@@ -166,21 +166,62 @@ most(all?) com.manigfeald.raft* namespaces"
                operation)))
 
 (defn insert-entries [raft-state entries]
-  {:pre [(every? map? entries)]
+  {:pre [(every? map? entries)
+         (not (seq (for [[k v] (:log raft-state)
+                         :when (>= (:last-applied raft-state) k)
+                         :when (not (contains? v :return))]
+                     v)))]
    :post [(every?
            (fn [entry]
-             (= (log-entry-of % (:index entry))
-                entry))
+             (= (:operation (log-entry-of % (:index entry)))
+                (:operation entry)))
            entries)]}
-  (assoc raft-state
-    :log (reduce
-          #(log/add-to-log %1 (biginteger (:index %2)) %2)
-          (:log raft-state)
-          entries)))
-
-(defn rewrite-terms [raft-state target-index new-term]
-  (update-in raft-state [:log] log/rewrite-terms-after
-             target-index new-term))
+  #_(assert (not (seq (for [[k v] (:log raft-state)
+                            entry entries
+                            :when (= (:index entry) (:index v))
+                            :when (not= (:term entry) (:term v))
+                            :when (>= (:last-applied raft-state) (:index entry))]
+                        v)))
+            [(meta raft-state)
+             (count entries)
+             (first (for [[k v] (:log raft-state)
+                          entry entries
+                          :when (= (:index entry) (:index v))
+                          :when (not= (:term entry) (:term v))
+                          :when (>= (:last-applied raft-state) (:index entry))]
+                      [v entry]))])
+  (doseq [entry entries
+          :let [e (log/log-entry-of (:log raft-state) (:index entry))]
+          :when e
+          :when (contains? e :result)]
+    (assert (= (:term entry) (:term e))
+            [entry e]))
+  (let [% (assoc raft-state
+            :log (reduce
+                  (fn [log entry]
+                    (if (log/log-contains? log (:term entry) (:index entry))
+                      log
+                      (let [log (if (log/log-entry-of log (:index entry))
+                                  (loop [log log
+                                         i (:index entry)]
+                                    (if (contains? log i)
+                                      (recur (dissoc log i) (inc i))
+                                      log))
+                                  log)]
+                        (log/add-to-log log (:index entry) entry))))
+                  (:log raft-state)
+                  entries))]
+    (assert (not (seq (for [[k v] (:log %)
+                            :when (>= (:last-applied %) k)
+                            :when (not (contains? v :return))]
+                        v)))
+            (pr-str [(meta raft-state)
+                     (:last-applied %)
+                     (first (for [[k v] (:log %)
+                                  :when (>= (:last-applied %) k)
+                                  :when (not (contains? v :return))]
+                              [v (log/log-entry-of (:log %) k)]))]))
+    %))
 
 (defn log-entry-of [raft-state index]
   (log/log-entry-of (:log raft-state) index))

@@ -50,10 +50,20 @@
                                       (:target message))]
                       message)))
           (>= (log-count (:raft-state %))
-              (log-count (:raft-state raft-state)))]}
+              (log-count (:raft-state raft-state)))
+          (or (zero? (:last-applied (:raft-state %)))
+              (contains? (log-entry-of (:raft-state %) (:last-applied (:raft-state %))) :return))]}
   (let [[applied? new-state] (rules-of-raft raft-state)
         r (as-> new-state new-state
                 (cond-> new-state
+                        (and (not (zero? (:last-applied (:raft-state new-state))))
+                             (not (contains? (log-entry-of (:raft-state new-state)
+                                                           (:last-applied (:raft-state new-state)))
+                                             :return)))
+                        ((fn [x]
+                           (locking #'*out*
+                             (prn x))
+                           x))
                         (not= (:node-type (:raft-state new-state))
                               (:node-type (:raft-state raft-state)))
                         (log-trace
