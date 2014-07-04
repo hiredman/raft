@@ -49,8 +49,6 @@
                           :when (not= (:voted-for (:raft-state %))
                                       (:target message))]
                       message)))
-          #_(>= (log-count (:raft-state %))
-                (log-count (:raft-state raft-state)))
           (or (zero? (:last-applied (:raft-state %)))
               (contains? (log-entry-of (:raft-state %)
                                        (:last-applied (:raft-state %)))

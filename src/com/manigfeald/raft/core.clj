@@ -184,54 +184,32 @@ most(all?) com.manigfeald.raft* namespaces"
            (fn [entry]
              (= (:operation (log-entry-of % (:index entry)))
                 (:operation entry)))
-           entries)]}
-  #_(assert (not (seq (for [[k v] (:log raft-state)
-                            entry entries
-                            :when (= (:index entry) (:index v))
-                            :when (not= (:term entry) (:term v))
-                            :when (>= (:last-applied raft-state)
-                                      (:index entry))]
-                        v)))
-            [(meta raft-state)
-             (count entries)
-             (first (for [[k v] (:log raft-state)
-                          entry entries
-                          :when (= (:index entry) (:index v))
-                          :when (not= (:term entry) (:term v))
-                          :when (>= (:last-applied raft-state) (:index entry))]
-                      [v entry]))])
+           entries)
+          (not (seq (for [[idx term] (log/indices-and-terms (:log %))
+                          :when (>= (:last-applied %) idx)
+                          :when (not (contains? (log/log-entry-of (:log %) idx) :return))]
+                      true)))]}
   (doseq [entry entries
           :let [e (log/log-entry-of (:log raft-state) (:index entry))]
           :when e
           :when (contains? e :return)]
     (assert (= (:term entry) (:term e))
             [(meta raft-state) entry e]))
-  (let [% (assoc raft-state
-            :log (reduce
-                  (fn [log entry]
-                    (if (log/log-contains? log (:term entry) (:index entry))
-                      log
-                      (let [log (if (log/log-entry-of log (:index entry))
-                                  (loop [log log
-                                         i (:index entry)]
-                                    (if (contains? log i)
-                                      (recur (dissoc log i) (inc i))
-                                      log))
-                                  log)]
-                        (log/add-to-log log (:index entry) entry))))
-                  (:log raft-state)
-                  entries))]
-    (assert (not (seq (for [[k v] (:log %)
-                            :when (>= (:last-applied %) k)
-                            :when (not (contains? v :return))]
-                        v)))
-            (pr-str [(meta raft-state)
-                     (:last-applied %)
-                     (first (for [[k v] (:log %)
-                                  :when (>= (:last-applied %) k)
-                                  :when (not (contains? v :return))]
-                              [v (log/log-entry-of (:log %) k)]))]))
-    %))
+  (assoc raft-state
+    :log (reduce
+          (fn [log entry]
+            (if (log/log-contains? log (:term entry) (:index entry))
+              log
+              (let [log (if (log/log-entry-of log (:index entry))
+                          (loop [log log
+                                 i (:index entry)]
+                            (if (contains? log i)
+                              (recur (dissoc log i) (inc i))
+                              log))
+                          log)]
+                (log/add-to-log log (:index entry) entry))))
+          (:log raft-state)
+          entries)))
 
 (defn log-entry-of [raft-state index]
   (log/log-entry-of (:log raft-state) index))
@@ -268,3 +246,9 @@ most(all?) com.manigfeald.raft* namespaces"
       (assoc-in [:raft-state :leader-id] leader-id)
       (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
                                           (-> state :timer :now)))))
+
+(defn log-entries-this-term-and-committed? [raft-state]
+  (first (for [[index term] (log/indices-and-terms (:log raft-state))
+               :when (= term (:current-term raft-state))
+               :when (>= (:commit-index raft-state) index)]
+           true)))

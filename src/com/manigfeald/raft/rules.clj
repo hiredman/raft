@@ -15,7 +15,7 @@ form that the value will be bound to in both the head and the body."
     (if (head arg)
       (let [r (binding [*log-context* (:name this)]
                 (body arg))]
-        (assert (or (zero? (:last-applied (:raft-state r)))
+        #_(assert (or (zero? (:last-applied (:raft-state r)))
                     (contains? (get (:log (:raft-state r))
                                     (:last-applied (:raft-state r)))
                                :return))
@@ -91,10 +91,7 @@ form that the value will be bound to in both the head and the body."
    (and (> commit-index last-applied)
         ;; only apply when the latest thing to apply is from the
         ;; current term, this deals with split writes
-        (seq (for [[k v] (:log raft-state)
-                   :when (= current-term (:term v))
-                   :when (>= commit-index (:index v))]
-               true)))
+        (log-entries-this-term-and-committed? raft-state))
    (-> state
        (update-in [:raft-state] advance-applied-to-commit))
    {:as state
@@ -158,55 +155,8 @@ form that the value will be bound to in both the head and the body."
     (and (= message-term current-term)
          (log-contains? raft-state prev-log-term prev-log-index))
     (-> state
-        ((fn [s]
-           (assert (not (seq
-                         (for [[k v] (:log (:raft-state s))
-                               :when (>= (:last-applied (:raft-state s)) k)
-                               :when (not (contains? v :return))]
-                           v)))
-                   (pr-str ["before before"
-                            (:last-applied (:raft-state s))
-                            (for [[k v] (:log (:raft-state s))
-                                  :when (>= (:last-applied (:raft-state s)) k)
-                                  :when (not (contains? v :return))]
-                              v)]))
-           s))
-        ((fn [s]
-           (let [rs (with-meta (:raft-state s)
-                      {:id id
-                       :message-term message-term
-                       :current-term current-term
-                       :leader-id leader-id})]
-             (assoc s
-               :raft-state (insert-entries rs entries)))))
-        #_(update-in [:raft-state] insert-entries entries)
-        ((fn [s]
-           (assert (not (seq
-                         (for [[k v] (:log (:raft-state s))
-                               :when (>= (:last-applied (:raft-state s)) k)
-                               :when (not (contains? v :return))]
-                           v)))
-                   (pr-str ["before"
-                            (:last-applied (:raft-state s))
-                            (for [[k v] (:log (:raft-state s))
-                                  :when (>= (:last-applied (:raft-state s)) k)
-                                  :when (not (contains? v :return))]
-                              v)]))
-           s))
+        (update-in [:raft-state] insert-entries entries)
         (accept-append-entries leader-id current-term id)
-        ((fn [s]
-           (assert (not (seq
-                         (for [[k v] (:log (:raft-state s))
-                               :when (>= (:last-applied (:raft-state s)) k)
-                               :when (not (contains? v :return))]
-                           v)))
-                   (pr-str ["after"
-                            (:last-applied (:raft-state s))
-                            (for [[k v] (:log (:raft-state s))
-                                  :when (>= (:last-applied (:raft-state s)) k)
-                                  :when (not (contains? v :return))]
-                              v)]))
-           s))
         (as-> n
               (if (> leader-commit commit-index)
                 (assoc-in n [:raft-state :commit-index]
