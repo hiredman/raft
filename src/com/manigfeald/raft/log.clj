@@ -1,6 +1,7 @@
 (ns com.manigfeald.raft.log
   "extends RaftLog and Counted to ISeq and IPersistentMap because you
-  need at least two implementations for an abstraction")
+  need at least two implementations for an abstraction"
+  (:require [clojure.set :as set]))
 
 (defprotocol RaftLog
   (log-contains? [log log-term log-index]
@@ -16,7 +17,8 @@
   (log-entry-of [log index]
     "return the log entry with the given index or nil")
   (entry-with-serial [log serial]
-    "return the log entry associated with the given serial or nil"))
+    "return the log entry associated with the given serial or nil")
+  (delete-from [log index]))
 
 (defprotocol Counted
   (log-count [log]
@@ -64,7 +66,11 @@
     (first
      (for [{:keys [serial] :as entry} log
            :when (= serial needle-serial)]
-       entry))))
+       entry)))
+  (delete-from [log index]
+    (for [item log
+          :when (not (>= (:index item) index))]
+      item)))
 
 (extend-type clojure.lang.IPersistentMap
   Counted
@@ -99,7 +105,13 @@
   (entry-with-serial [log needle-serial]
     (first (for [[index {:keys [serial] :as entry}] log
                  :when (= serial needle-serial)]
-             entry))))
+             entry)))
+  (delete-from [log index]
+    (loop [log log
+           index index]
+      (if (contains? log index)
+        (recur (dissoc log index) (inc index))
+        log))))
 
 (deftype LogChecker [log1 log2]
   Counted
@@ -127,7 +139,7 @@
   (indices-and-terms [log]
     (let [r1 (indices-and-terms log1)
           r2 (indices-and-terms log2)]
-      (assert (= r1 r2) ["indices-and-terms" r1 r2])
+      (assert (= (set r1) (set r2)) ["indices-and-terms" r1 r2])
       r1))
   (add-to-log [log index entry]
     (assert (map? entry) entry)
@@ -135,7 +147,10 @@
     (let [r1 (add-to-log log1 index entry)
           r2 (add-to-log log2 index entry)]
       (assert (= (set (indices-and-terms r1))
-                 (set (indices-and-terms r2))) ["add-to-log" r1 r2])
+                 (set (indices-and-terms r2)))
+              ["add-to-log"
+               (set (indices-and-terms r1))
+               (set (indices-and-terms r2))])
       (LogChecker. r1 r2)))
   (log-entry-of [log index]
     (let [r1 (log-entry-of log1 index)
@@ -146,7 +161,18 @@
     (let [r1 (entry-with-serial log1 serial)
           r2 (entry-with-serial log2 serial)]
       (assert (= r1 r2) ["entry-with-serial" r1 r2])
-      r1)))
+      r1))
+  (delete-from [log index]
+    (let [r1 (delete-from log1 index)
+          r2 (delete-from log2 index)]
+      (assert (= (set (indices-and-terms r1))
+                 (set (indices-and-terms r2)))
+              ["delete-from"
+               (set/difference (set (indices-and-terms r1))
+                               (set (indices-and-terms r2)))
+               (set/difference (set (indices-and-terms r2))
+                               (set (indices-and-terms r1)))])
+      (LogChecker. r1 r2))))
 
 (alter-meta! #'->LogChecker assoc :doc
              "satisfies RaftLog, takes two things that satisfy RaftLog

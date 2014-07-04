@@ -43,10 +43,6 @@ most(all?) com.manigfeald.raft* namespaces"
   "given a RaftState, ensure all commited operations have been applied
   to the value"
   [raft-state]
-  {:post [(not (seq (for [[_ entry] (:log %)
-                          :when (>= (:last-applied %) (:index entry))
-                          :when (not (contains? entry :return))]
-                      entry)))]}
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
@@ -175,11 +171,7 @@ most(all?) com.manigfeald.raft* namespaces"
                operation)))
 
 (defn insert-entries [raft-state entries]
-  {:pre [(every? map? entries)
-         (not (seq (for [[k v] (:log raft-state)
-                         :when (>= (:last-applied raft-state) k)
-                         :when (not (contains? v :return))]
-                     v)))]
+  {:pre [(every? map? entries)]
    :post [(every?
            (fn [entry]
              (= (:operation (log-entry-of % (:index entry)))
@@ -201,11 +193,7 @@ most(all?) com.manigfeald.raft* namespaces"
             (if (log/log-contains? log (:term entry) (:index entry))
               log
               (let [log (if (log/log-entry-of log (:index entry))
-                          (loop [log log
-                                 i (:index entry)]
-                            (if (contains? log i)
-                              (recur (dissoc log i) (inc i))
-                              log))
+                          (log/delete-from log (:index entry))
                           log)]
                 (log/add-to-log log (:index entry) entry))))
           (:log raft-state)
@@ -220,8 +208,8 @@ most(all?) com.manigfeald.raft* namespaces"
 (defn empty-log
   "create an empty thing that satisfies the RaftLog protocol"
   []
-  {}
-  #_(com.manigfeald.raft.log.LogChecker. () {}))
+  #_{}
+  (com.manigfeald.raft.log.LogChecker. () {}))
 
 (defn reject-append-entries [state leader-id current-term id]
   (-> state
