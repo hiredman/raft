@@ -13,10 +13,6 @@
     "a seq of [index term] pairs from the log")
   (add-to-log [log index entry]
     "add an entry to the log with a given index")
-  ;; for strict "raft" make this operation a no op
-  (rewrite-terms-after [log index new-term]
-    "associated the given new term with every entry in the log after
-    the given index")
   (log-entry-of [log index]
     "return the log entry with the given index or nil")
   (entry-with-serial [log serial]
@@ -59,12 +55,6 @@
                         :index index)}
                     r))
       r))
-  (rewrite-terms-after [log index new-term]
-    (sort-by #(- 0 (:index %))
-             (for [entry log]
-               (if (> (:index entry) index)
-                 (assoc entry :term new-term)
-                 entry))))
   (log-entry-of [log needle-index]
     (first
      (for [{:keys [index] :as entry} log
@@ -104,11 +94,6 @@
               index (assoc entry :index index))]
       (assert (every? number? (keys log)))
       l))
-  (rewrite-terms-after [log target-index new-term]
-    (into log (for [[index entry] log]
-                (if (> index target-index)
-                  [index (assoc entry :term new-term)]
-                  [index entry]))))
   (log-entry-of [log index]
     (get log index))
   (entry-with-serial [log needle-serial]
@@ -151,13 +136,6 @@
           r2 (add-to-log log2 index entry)]
       (assert (= (set (indices-and-terms r1))
                  (set (indices-and-terms r2))) ["add-to-log" r1 r2])
-      (LogChecker. r1 r2)))
-  (rewrite-terms-after [log index new-term]
-    (let [r1 (rewrite-terms-after log1 index new-term)
-          r2 (rewrite-terms-after log2 index new-term)]
-      (assert (= (set (indices-and-terms r1))
-                 (set (indices-and-terms r2)))
-              ["rewrite-terms-after" r1 r2])
       (LogChecker. r1 r2)))
   (log-entry-of [log index]
     (let [r1 (log-entry-of log1 index)
