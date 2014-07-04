@@ -203,9 +203,9 @@ most(all?) com.manigfeald.raft* namespaces"
   (doseq [entry entries
           :let [e (log/log-entry-of (:log raft-state) (:index entry))]
           :when e
-          :when (contains? e :result)]
+          :when (contains? e :return)]
     (assert (= (:term entry) (:term e))
-            [entry e]))
+            [(meta raft-state) entry e]))
   (let [% (assoc raft-state
             :log (reduce
                   (fn [log entry]
