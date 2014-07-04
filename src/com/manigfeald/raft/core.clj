@@ -35,34 +35,43 @@ most(all?) com.manigfeald.raft* namespaces"
   [raft-state index value]
   {:post [(contains? (log-entry-of % index) :return)]}
   (let [entry (log-entry-of raft-state index)]
-    (update-in raft-state [:log] log/add-to-log (:index entry) (assoc entry :return value))))
+    (update-in raft-state [:log] log/add-to-log (:index entry)
+               (assoc entry :return value))))
 
 ;; TODO: move add and remove node in to its own code
 (defn advance-applied-to-commit
   "given a RaftState, ensure all commited operations have been applied
   to the value"
   [raft-state]
+  {:post [(not (seq (for [[_ entry] (:log %)
+                          :when (>= (:last-applied %) (:index entry))
+                          :when (not (contains? entry :return))]
+                      entry)))]}
   (if (> (:commit-index raft-state)
          (:last-applied raft-state))
     (let [new-last (inc (:last-applied raft-state))
           op (log-entry-of raft-state new-last)]
       (assert op "op is in the log")
       (case (:operation-type op)
-        :add-node (recur (-> raft-state
-                             (assoc :last-applied new-last)
-                             (update-in [:node-set] conj (:node op))))
-        :remove-node (recur (-> raft-state
-                                (assoc :last-applied new-last)
-                                (update-in [:node-set] disj (:node op))))
+        :add-node (advance-applied-to-commit
+                   (-> raft-state
+                       (assoc :last-applied new-last)
+                       (update-in [:node-set] conj (:node op))))
+        :remove-node (advance-applied-to-commit
+                      (-> raft-state
+                          (assoc :last-applied new-last)
+                          (update-in [:node-set] disj (:node op))))
         (let [[return new-value] (apply-operation (:value raft-state)
                                                   (:payload op))
               new-state (set-return-value raft-state (:index op) return)]
           (assert (:index op))
           (assert (= return (:return (log-entry-of new-state (:index op))))
                   [op (log-entry-of new-state (:index op))])
-          (recur (assoc new-state
-                   :value new-value
-                   :last-applied new-last)))))
+          ;; post condition means it cannot be a recur
+          (advance-applied-to-commit
+           (assoc new-state
+             :value new-value
+             :last-applied new-last)))))
     raft-state))
 
 (defn consume-message
@@ -180,7 +189,8 @@ most(all?) com.manigfeald.raft* namespaces"
                             entry entries
                             :when (= (:index entry) (:index v))
                             :when (not= (:term entry) (:term v))
-                            :when (>= (:last-applied raft-state) (:index entry))]
+                            :when (>= (:last-applied raft-state)
+                                      (:index entry))]
                         v)))
             [(meta raft-state)
              (count entries)

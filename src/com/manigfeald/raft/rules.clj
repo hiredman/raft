@@ -234,8 +234,11 @@ form that the value will be bound to in both the head and the body."
     :success
     (and (or (= voted-for candidate-id)
              (nil? voted-for))
-         #_(log-contains? raft-state last-log-term last-log-index)
-         (>= last-log-index (com.manigfeald.raft.core/last-log-index raft-state)))
+         (>= last-log-index (com.manigfeald.raft.core/last-log-index
+                             raft-state))
+         (>= last-log-term (com.manigfeald.raft.core/last-log-term raft-state))
+         (or (log-contains? raft-state last-log-term last-log-index)
+             (nil? (log-entry-of raft-state last-log-index))))
     (-> state
         (log-trace "votes for" candidate-id "in" current-term)
         (consume-message)

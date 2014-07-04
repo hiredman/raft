@@ -144,15 +144,17 @@
          (throw (Exception. "failed to get a leader")))))))
 
 (defn with-leader [nodes action]
-  (let [[[_ leader]] (sort-by first (for [node nodes
-                                          :let [{:keys [raft]} node
-                                                v (deref raft)
-                                                {{:keys [leader-id]} :raft-state} v]
-                                          :when leader-id
-                                          leader nodes
-                                          :when (= leader-id (:id leader))]
-                                      [(* -1 (:current-term (:raft-state v)))
-                                       leader]))]
+  (let [[[_ leader]] (sort-by
+                      first
+                      (for [node nodes
+                            :let [{:keys [raft]} node
+                                  v (deref raft)
+                                  {{:keys [leader-id]} :raft-state} v]
+                            :when leader-id
+                            leader nodes
+                            :when (= leader-id (:id leader))]
+                        [(* -1 (:current-term (:raft-state v)))
+                         leader]))]
     (when leader
       (action leader))
     nil))
@@ -196,8 +198,10 @@
      (:index entry))))
 
 (defn applied [nodes serial-w else]
-  (let [greatest-term (apply max (for [node nodes]
-                                   (-> node :raft deref :raft-state :current-term)))]
+  (let [greatest-term (apply
+                       max
+                       (for [node nodes]
+                         (-> node :raft deref :raft-state :current-term)))]
     (or (first (for [node nodes
                      :let [{:keys [raft]} node
                            v (deref raft)
@@ -226,8 +230,8 @@
 (defn raft-write [nodes key value]
   (let [id (java.util.UUID/randomUUID)]
     (try-try-again
-     {:sleep 10
-      :tries 6000}
+     {:sleep 100
+      :tries 300}
      (fn []
        (raft-write-and-forget nodes key value id)
        (when (= :dunno (applied nodes id :dunno))
@@ -245,8 +249,8 @@
   (let [id (java.util.UUID/randomUUID)]
     (try
       (try-try-again
-       {:sleep 10
-        :tries 6000}
+       {:sleep 100
+        :tries 300}
        (fn []
          (with-leader nodes
            (fn [leader]
@@ -383,6 +387,9 @@
               (swap! a inc)
               (log/trace "writing" @a)
               (raft-write nodes :key @a)
+              (doseq [node nodes
+                      :when (future-done? (:future node))]
+                (deref (:future node)))
               (finally
                 (.release (:lock victim))))))
         (finally
