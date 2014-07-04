@@ -88,11 +88,18 @@ form that the value will be bound to in both the head and the body."
 ;;
 (def keep-up-apply
   (rule
-   (> commit-index last-applied)
+   (and (> commit-index last-applied)
+        ;; only apply when the latest thing to apply is from the
+        ;; current term, this deals with split writes
+        (seq (for [[k v] (:log raft-state)
+                   :when (= current-term (:term v))
+                   :when (>= commit-index (:index v))]
+               true)))
    (-> state
        (update-in [:raft-state] advance-applied-to-commit))
    {:as state
-    {:keys [commit-index last-applied]} :raft-state}))
+    {:keys [commit-index last-applied current-term]
+     :as raft-state} :raft-state}))
 
 (def jump-to-newer-term
   (rule
