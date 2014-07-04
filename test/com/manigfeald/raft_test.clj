@@ -310,24 +310,24 @@
       (finally
         (shut-it-down! nodes)))))
 
-(deftest test-operations
-  (let [node-ids-and-channels (into {} (for [i (range 5)]
-                                         [i (chan (sliding-buffer 10))]))
-        cluster (reduce #(add-node % (key %2) (val %2))
-                        (->ChannelCluster) node-ids-and-channels)
-        nodes (doall (for [[node-id in] node-ids-and-channels]
-                       (raft-obj in node-id cluster)))]
-    (with-pings nodes
-      (try
-        (testing "elect leader"
-          (is (stable-leader? nodes 5)))
-        (raft-write nodes "hello" "world")
-        (doseq [node nodes
-                :let [{:keys [raft]} node
-                      {{{:strs [hello]} :value} :raft-state} (deref raft)]]
-          (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
-        (finally
-          (shut-it-down! nodes))))))
+;; (deftest test-operations
+;;   (let [node-ids-and-channels (into {} (for [i (range 5)]
+;;                                          [i (chan (sliding-buffer 10))]))
+;;         cluster (reduce #(add-node % (key %2) (val %2))
+;;                         (->ChannelCluster) node-ids-and-channels)
+;;         nodes (doall (for [[node-id in] node-ids-and-channels]
+;;                        (raft-obj in node-id cluster)))]
+;;     (with-pings nodes
+;;       (try
+;;         (testing "elect leader"
+;;           (is (stable-leader? nodes 5)))
+;;         (raft-write nodes "hello" "world")
+;;         (doseq [node nodes
+;;                 :let [{:keys [raft]} node
+;;                       {{{:strs [hello]} :value} :raft-state} (deref raft)]]
+;;           (is (= hello "world") (deref (:raft (stable-leader? nodes 5)))))
+;;         (finally
+;;           (shut-it-down! nodes))))))
 
 (deftest test-read-operations
   (let [node-ids-and-channels (into {} (for [i (range 5)]

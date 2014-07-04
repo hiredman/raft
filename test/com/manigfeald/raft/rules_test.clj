@@ -40,45 +40,61 @@
                 :raft-state {:current-term 2
                              :node-type :follower
                              :votes 0
+                             :last-applied 0
+                             :commit-index 0
+                             :log {}
+                             :leader-id nil
                              :voted-for nil}}]
          (update-in (jump-to-newer-term
                      {:io {:message {:term 2}}
                       :running-log PersistentQueue/EMPTY
                       :raft-state {:current-term 1
+                                   :last-applied 0
+                                   :commit-index 0
+                                   :log {}
                                    :node-type :candidate-id}})
                     [1] dissoc :running-log))))
 
 (deftest t-follower-respond-to-append-entries
   (testing "failing old term"
-    (is (= [true {:raft-state {:node-type :follower
-                               :current-term 1}
-                  :timer {:period 3
-                          :now 5
-                          :next-timeout 8}
-                  :io {:message nil
-                       :out-queue [{:type :append-entries-response
-                                    :target ::bob
-                                    :term 1
-                                    :success? false
-                                    :from ::me}]}
-                  :id ::me}]
-           (follower-respond-to-append-entries
-            {:id ::me
-             :raft-state {:node-type :follower
-                          :current-term 1}
-             :timer {:period 3
-                     :now 5}
-             :io {:message {:type :append-entries
-                            :leader-id ::bob
-                            :term 0}}}))))
+    (is (= [true {:id :com.manigfeald.raft.rules-test/me,
+                  :raft-state {:last-applied 1,
+                               :node-type :follower,
+                               :commit-index 1,
+                               :current-term 1},
+                  :timer {:next-timeout 8,
+                          :now 5,
+                          :period 3},
+                  :io {:out-queue [{:type :append-entries-response,
+                                    :term 1,
+                                    :success? false,
+                                    :from ::me,
+                                    :target ::bob}],
+                       :message nil}}]
+           (update-in (follower-respond-to-append-entries
+                       {:id ::me
+                        :running-log PersistentQueue/EMPTY
+                        :raft-state {:node-type :follower
+                                     :current-term 1
+                                     :commit-index 1
+                                     :last-applied 1}
+                        :timer {:period 3
+                                :now 5}
+                        :io {:message {:type :append-entries
+                                       :leader-id ::bob
+                                       :term 0}}})
+                      [1] dissoc :running-log))))
   (testing "entries not in log"
     (let [[matched? result] (follower-respond-to-append-entries
                              {:id ::me
                               :raft-state {:node-type :follower
                                            :current-term 1
+                                           :commit-index 1
+                                           :last-applied 1
                                            :log {}}
                               :timer {:period 3
                                       :now 5}
+                              :running-log PersistentQueue/EMPTY
                               :io {:message {:type :append-entries
                                              :term 1
                                              :prev-log-index 1
@@ -89,30 +105,34 @@
         (is (= type :append-entries-response))
         (is (= term 1))
         (is (not success?))
-        (is (= from ::me)))))
-  (testing "success"
-    (let [[matched? result] (follower-respond-to-append-entries
-                             {:id ::me
-                              :raft-state {:node-type :follower
-                                           :current-term 1
-                                           :log {1 {:term 1}}}
-                              :timer {:period 3
-                                      :now 5}
-                              :io {:message {:type :append-entries
-                                             :term 1
-                                             :leader-id ::bob
-                                             :prev-log-index 1
-                                             :prev-log-term 1}}})
-          {{messages :out-queue} :io} result]
-      (is matched? result)
-      (is (= ::bob (:leader-id (:raft-state result))))
-      (doseq [{:keys [type term success? from last-log-index]}
-              messages]
-        (is (= type :append-entries-response))
-        (is (= term 1))
-        (is success?)
-        (is (= from ::me))
-        (is (= 1 last-log-index))))))
+        (is (= from ::me))))))
+(testing "success"
+  (let [[matched? result] (follower-respond-to-append-entries
+                           {:id ::me
+                            :raft-state {:node-type :follower
+                                         :current-term 1
+                                         :commit-index 0
+                                         :last-applied 0
+                                         :log {1 {:term 1}}}
+                            :timer {:period 3
+                                    :now 5}
+                            :running-log PersistentQueue/EMPTY
+                            :io {:message {:type :append-entries
+                                           :term 1
+                                           :leader-commit 0
+                                           :leader-id ::bob
+                                           :prev-log-index 1
+                                           :prev-log-term 1}}})
+        {{messages :out-queue} :io} result]
+    (is matched? result)
+    (is (= ::bob (:leader-id (:raft-state result))))
+    (doseq [{:keys [type term success? from last-log-index]}
+            messages]
+      (is (= type :append-entries-response))
+      (is (= term 1))
+      (is success?)
+      (is (= from ::me))
+      (is (= 1 last-log-index)))))
 
 (deftest t-follower-respond-to-request-vote
   (testing "not voted zero last term and index"
@@ -120,7 +140,10 @@
                              {:id ::me
                               :raft-state {:node-type :follower
                                            :current-term 1
-                                           :voted-for nil}
+                                           :voted-for nil
+                                           :commit-index 0
+                                           :last-applied 0
+                                           :log {}}
                               :timer {:period 3
                                       :now 5}
                               :running-log PersistentQueue/EMPTY
@@ -143,6 +166,8 @@
                               :raft-state {:node-type :follower
                                            :current-term 1
                                            :voted-for nil
+                                           :commit-index 0
+                                           :last-applied 0
                                            :log {1 {:term 1}}}
                               :timer {:period 3
                                       :now 5}
@@ -166,6 +191,8 @@
                               :raft-state {:node-type :follower
                                            :current-term 1
                                            :voted-for nil
+                                           :commit-index 0
+                                           :last-applied 0
                                            :log {}}
                               :timer {:period 3
                                       :now 5}
@@ -173,8 +200,8 @@
                               :io {:message {:type :request-vote
                                              :term 1
                                              :candidate-id ::bob
-                                             :last-log-index 1
-                                             :last-log-term 1}}})
+                                             :last-log-index -1
+                                             :last-log-term -11}}})
           messages (:out-queue (:io result))]
       (is applied? result)
       (is (= 1 (count messages)) messages)
@@ -189,6 +216,8 @@
                               :raft-state {:node-type :follower
                                            :current-term 1
                                            :voted-for ::alice
+                                           :commit-index 1
+                                           :last-applied 1
                                            :log {}}
                               :timer {:period 3
                                       :now 5}
@@ -212,6 +241,8 @@
                            {:id ::me
                             :raft-state {:node-type :follower
                                          :current-term 1
+                                         :commit-index 0
+                                         :last-applied 0
                                          :voted-for nil
                                          :node-set #{::a ::b ::c}
                                          :log {1 {:index 1
@@ -243,6 +274,9 @@
                              {:id ::me
                               :raft-state {:node-type :candidate
                                            :current-term 1
+                                           :last-applied 0
+                                           :commit-index 0
+                                           :log {}
                                            :node-set #{1 2 3}
                                            :votes 2}
                               :timer {:now 10
@@ -259,6 +293,9 @@
                              {:id ::me
                               :raft-state {:node-type :candidate
                                            :current-term 1
+                                           :last-applied 0
+                                           :commit-index 0
+                                           :log {}
                                            :node-set #{1 2 3 4 5}
                                            :votes 1}
                               :running-log PersistentQueue/EMPTY
@@ -290,6 +327,8 @@
                            {:id ::me
                             :raft-state {:node-type :candidate
                                          :current-term 1
+                                         :commit-index 0
+                                         :last-applied 0
                                          :node-set #{1 2 3}
                                          :votes 2}
                             :timer {:now 10
@@ -312,7 +351,10 @@
                            {:id ::me
                             :raft-state {:node-type :candidate
                                          :current-term 1
-                                         :node-set #{::a ::b ::c}}
+                                         :node-set #{::a ::b ::c}
+                                         :commit-index 0
+                                         :last-applied 0
+                                         :log {}}
                             :running-log PersistentQueue/EMPTY
                             :timer {:now 10
                                     :next-timeout 9
@@ -333,6 +375,9 @@
                            {:id ::me
                             :raft-state {:node-type :leader
                                          :current-term 1
+                                         :commit-index 0
+                                         :last-applied 0
+                                         :log {}
                                          :node-set #{::a ::b ::me}}
                             :timer {:now 10
                                     :next-timeout 9
@@ -349,6 +394,8 @@
                            {:id ::me
                             :raft-state {:node-type :leader
                                          :current-term 1
+                                         :commit-index 1
+                                         :last-applied 1
                                          :log {1 {:index 1 :term 1}}
                                          :node-set #{::a ::b ::me}}
                             :raft-leader-state {:next-index {::a 1
@@ -377,8 +424,10 @@
 (deftest t-update-commit
   (let [[applied? result] (update-commit
                            {:id ::me
+                            :running-log PersistentQueue/EMPTY
                             :raft-state {:node-type :leader
                                          :current-term 1
+                                         :last-applied 0
                                          :log {1 {:index 1 :term 1}}
                                          :node-set #{::a ::b ::me}
                                          :commit-index 0}
@@ -394,6 +443,7 @@
                            {:id ::me
                             :raft-state {:node-type :leader
                                          :current-term 1
+                                         :last-applied 0
                                          :log {1 {:index 1 :term 1}}
                                          :node-set #{::a ::b ::me}
                                          :commit-index 0}
@@ -409,6 +459,7 @@
                            {:id ::me
                             :raft-state {:node-type :leader
                                          :current-term 1
+                                         :last-applied 0
                                          :log {1 {:index 1 :term 1}}
                                          :node-set #{::a ::b ::me}
                                          :commit-index 0}
