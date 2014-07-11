@@ -374,20 +374,25 @@
                         node-ids-and-channels)
         nodes (doall (for [[node-id in] node-ids-and-channels]
                        (raft-obj in node-id cluster)))
-        a (atom 0)]
+        a (atom {})
+        keys (repeatedly 10 gensym)]
     (with-pings nodes
       (try
-        (raft-write nodes :key 0)
-        (dotimes [i 2]
+        (let [v (gensym)
+              k (rand-nth keys)]
+          (swap! a assoc k v)
+          (raft-write nodes k v))
+        (dotimes [i 10]
           (let [locked-nodes (rand-lock nodes (min 2 (inc i)))]
             (log/trace "victims" (pr-str (map :id locked-nodes)))
             (try
-              (let [rv (raft-read nodes :key)]
-                (is (= @a (raft-read nodes :key))
-                    (with-out-str
-                      (pp/pprint nodes))))
-              (swap! a inc)
-              (raft-write nodes :key @a)
+              (doseq [[k v] @a]
+                (is (= v (raft-read nodes k))
+                    [k v]))
+              (let [v (gensym)
+                    k (rand-nth keys)]
+                (swap! a assoc k v)
+                (raft-write nodes k v))
               (doseq [node nodes
                       :when (future-done? (:future node))]
                 (deref (:future node)))
