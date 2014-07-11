@@ -450,7 +450,8 @@ form that the value will be bound to in both the head and the body."
                   (possible-new-commit
                    commit-index raft-state match-index node-set current-term)
                   "match-index value frequencies"
-                  (frequencies (vals (:match-index (:raft-leader-state state)))))
+                  (frequencies
+                   (vals (:match-index (:raft-leader-state state)))))
        (assoc-in [:raft-state :commit-index]
                  (possible-new-commit
                   commit-index raft-state match-index node-set current-term)))
