@@ -138,8 +138,6 @@ most(all?) com.manigfeald.raft* namespaces"
   "given a state and a log message (as a seq of strings) append the
   message to the log at the trace level"
   [state & message]
-  {:pre [(instance? PersistentQueue (:running-log state))]
-   :post [(instance? PersistentQueue (:running-log %))]}
   (update-in state [:running-log]
              (fnil conj PersistentQueue/EMPTY)
              {:level :trace
