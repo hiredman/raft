@@ -1,13 +1,13 @@
->(ns com.manigfeald.raft-test
-   (:require [clojure.test :refer :all]
-             [com.manigfeald.raft :refer :all]
-             [clojure.core.async :refer [alt!! timeout <!! >!! chan
-                                         sliding-buffer dropping-buffer
-                                         close!]]
-             [clojure.tools.logging :as log]
-             [clojure.pprint :as pp]
-             [robert.bruce :refer [try-try-again]]
-             [com.manigfeald.raft.log :as rlog]))
+(ns com.manigfeald.raft-test
+  (:require [clojure.test :refer :all]
+            [com.manigfeald.raft :refer :all]
+            [clojure.core.async :refer [alt!! timeout <!! >!! chan
+                                        sliding-buffer dropping-buffer
+                                        close!]]
+            [clojure.tools.logging :as log]
+            [clojure.pprint :as pp]
+            [robert.bruce :refer [try-try-again]]
+            [com.manigfeald.raft.log :as rlog]))
 
 ;; stop sf4j or whatever from printing out nonsense when you run tests
 (log/info "logging is terrible")
@@ -159,44 +159,6 @@
       (action leader))
     nil))
 
-(defn await-applied [nodes serial-w dunno]
-  (try
-    (try-try-again
-     {:sleep 100
-      :tries 60}
-     (fn []
-       #_(log/trace "await-applied body")
-       (let [r (for [node nodes
-                     :let [{:keys [raft]} node
-                           v (deref raft)
-                           {{:keys [last-applied log]} :raft-state} v]
-                     :when log
-                     :let [entry (rlog/entry-with-serial log serial-w)]
-                     :when entry
-                     :when (>= last-applied (:index entry))]
-                 (assoc entry
-                   :last-applied last-applied))]
-         ;; pass in n?
-         (if (and (= (count nodes) (count r))
-                  (apply = r))
-           (first r)
-           (throw (Exception.))))))
-    (catch Exception e
-      dunno)))
-
-(defn last-applied [nodes]
-  (frequencies
-   (doall (for [node nodes]
-            (-> node :raft deref :raft-state :last-applied)))))
-
-(defn index [nodes serial]
-  (frequencies
-   (for [node nodes
-         :let [log (-> node :raft deref :raft-state :log)
-               entry (rlog/entry-with-serial log serial)]
-         :when entry]
-     (:index entry))))
-
 (defn applied [nodes serial-w else]
   (let [greatest-term (apply
                        max
@@ -250,7 +212,7 @@
     (try
       (try-try-again
        {:sleep 100
-        :tries 300}
+        :tries 600}
        (fn []
          (with-leader nodes
            (fn [leader]
@@ -392,6 +354,45 @@
                 (deref (:future node)))
               (finally
                 (.release (:lock victim))))))
+        (finally
+          (shut-it-down! nodes))))))
+
+(defn rand-lock [nodes n]
+  (let [to-lock (take n (shuffle nodes))]
+    (doseq [node to-lock]
+      (.acquire (:lock node)))
+    to-lock))
+
+(defn unlock [locked-nodes]
+  (doseq [node locked-nodes]
+    (.release (:lock node))))
+
+(deftest test-stress-down-down-down
+  (let [node-ids-and-channels (into {} (for [i (range 5)]
+                                         [i (chan (sliding-buffer 1000))]))
+        cluster (reduce #(add-node % (key %2) (val %2)) (->ChannelCluster)
+                        node-ids-and-channels)
+        nodes (doall (for [[node-id in] node-ids-and-channels]
+                       (raft-obj in node-id cluster)))
+        a (atom 0)]
+    (with-pings nodes
+      (try
+        (raft-write nodes :key 0)
+        (dotimes [i 2]
+          (let [locked-nodes (rand-lock nodes (min 2 (inc i)))]
+            (log/trace "victims" (pr-str (map :id locked-nodes)))
+            (try
+              (let [rv (raft-read nodes :key)]
+                (is (= @a (raft-read nodes :key))
+                    (with-out-str
+                      (pp/pprint nodes))))
+              (swap! a inc)
+              (raft-write nodes :key @a)
+              (doseq [node nodes
+                      :when (future-done? (:future node))]
+                (deref (:future node)))
+              (finally
+                (unlock locked-nodes)))))
         (finally
           (shut-it-down! nodes))))))
 
