@@ -4,9 +4,7 @@
             [com.manigfeald.raft.rules :refer [rules-of-raft]])
   (:import (clojure.lang PersistentQueue)))
 
-;; TODO: document log entry format
 ;; TODO: knossos
-;; TODO: strict mode
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied
