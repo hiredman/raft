@@ -21,6 +21,11 @@
 (alter-meta! #'map->IO assoc :no-doc true)
 (alter-meta! #'map->Timer assoc :no-doc true)
 (alter-meta! #'map->ImplementationState assoc :no-doc true)
+(alter-meta! #'->RaftLeaderState assoc :no-doc true)
+(alter-meta! #'->RaftState assoc :no-doc true)
+(alter-meta! #'->IO assoc :no-doc true)
+(alter-meta! #'->Timer assoc :no-doc true)
+(alter-meta! #'->ImplementationState assoc :no-doc true)
 
 (defn raft
   "return an init state when given a node id and a node-set"
@@ -42,7 +47,9 @@
    PersistentQueue/EMPTY
    timer))
 
-(defn run-one [raft-state]
+(defn run-one
+  "given a state, advance it to the next state"
+  [raft-state]
   {:post [(not (seq (for [message (:out-queue (:io %))
                           :when (= (:type message) :request-vote-response)
                           :when (:success? message)

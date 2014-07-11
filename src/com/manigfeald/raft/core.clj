@@ -97,7 +97,9 @@ most(all?) com.manigfeald.raft* namespaces"
   [raft-state]
   (biginteger (log/last-log-index (:log raft-state))))
 
-(defn last-log-term [raft-state]
+(defn last-log-term
+  "return the term of the latest log entry"
+  [raft-state]
   {:post [(number? %)
           (not (neg? %))]}
   (biginteger (log/last-log-term (:log raft-state))))
@@ -167,23 +169,26 @@ most(all?) com.manigfeald.raft* namespaces"
                (biginteger (inc (last-log-index raft-state)))
                operation)))
 
-(defn insert-entries [raft-state entries]
+(defn insert-entries
+  "given a collection of log entries, insert them in to the log"
+  [raft-state entries]
   {:pre [(every? map? entries)]
-   :post [(every?
-           (fn [entry]
-             (= (:operation (log-entry-of % (:index entry)))
-                (:operation entry)))
-           entries)
+   :post [#_(every?
+             (fn [entry]
+               (= (:operation (log-entry-of % (:index entry)))
+                  (:operation entry)))
+             entries)
           (not (seq (for [[idx term] (log/indices-and-terms (:log %))
                           :when (>= (:last-applied %) idx)
-                          :when (not (contains? (log/log-entry-of (:log %) idx) :return))]
+                          :when (not (contains? (log/log-entry-of (:log %) idx)
+                                                :return))]
                       true)))]}
-  (doseq [entry entries
-          :let [e (log/log-entry-of (:log raft-state) (:index entry))]
-          :when e
-          :when (contains? e :return)]
-    (assert (= (:term entry) (:term e))
-            [(meta raft-state) entry e]))
+  #_(doseq [entry entries
+            :let [e (log/log-entry-of (:log raft-state) (:index entry))]
+            :when e
+            :when (contains? e :return)]
+      (assert (= (:term entry) (:term e))
+              [(meta raft-state) entry e]))
   (assoc raft-state
     :log (reduce
           (fn [log entry]
@@ -196,10 +201,14 @@ most(all?) com.manigfeald.raft* namespaces"
           (:log raft-state)
           entries)))
 
-(defn log-entry-of [raft-state index]
+(defn log-entry-of
+  "return the log entry for a given index"
+  [raft-state index]
   (log/log-entry-of (:log raft-state) index))
 
-(defn log-count [raft-state]
+(defn log-count
+  "return the count of the log"
+  [raft-state]
   (log/log-count (:log raft-state)))
 
 (defn empty-log
@@ -209,7 +218,9 @@ most(all?) com.manigfeald.raft* namespaces"
   #_(com.manigfeald.raft.log.LogChecker. () {})
   ())
 
-(defn reject-append-entries [state leader-id current-term id]
+(defn reject-append-entries
+  "update the state so the append entries message has been rejected"
+  [state leader-id current-term id]
   (-> state
       (consume-message)
       (publish [{:type :append-entries-response
@@ -220,7 +231,9 @@ most(all?) com.manigfeald.raft* namespaces"
       (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
                                           (-> state :timer :now)))))
 
-(defn accept-append-entries [state leader-id current-term id]
+(defn accept-append-entries
+  "update the state so the append entries message has been accepted"
+  [state leader-id current-term id]
   (-> state
       (consume-message)
       (publish [{:type :append-entries-response
@@ -233,7 +246,10 @@ most(all?) com.manigfeald.raft* namespaces"
       (assoc-in [:timer :next-timeout] (+ (-> state :timer :period)
                                           (-> state :timer :now)))))
 
-(defn log-entries-this-term-and-committed? [raft-state]
+(defn log-entries-this-term-and-committed?
+  "are there any log entries from this current term that have been
+  committed?"
+  [raft-state]
   (first (for [[index term] (log/indices-and-terms (:log raft-state))
                :when (= term (:current-term raft-state))
                :when (>= (:commit-index raft-state) index)]

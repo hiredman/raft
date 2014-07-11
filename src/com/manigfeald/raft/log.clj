@@ -18,7 +18,8 @@
     "return the log entry with the given index or nil")
   (entry-with-serial [log serial]
     "return the log entry associated with the given serial or nil")
-  (delete-from [log index]))
+  (delete-from [log index]
+    "delete log entries from the given index onwards"))
 
 (defprotocol Counted
   (log-count [log]
