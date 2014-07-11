@@ -27,8 +27,7 @@ most(all?) com.manigfeald.raft* namespaces"
 
 (alter-meta! #'map->MapValue assoc :no-doc true)
 
-(declare log-entry-of
-         insert-entries)
+(declare log-entry-of)
 
 (defn set-return-value
   "set the return value of an operation in the log"
