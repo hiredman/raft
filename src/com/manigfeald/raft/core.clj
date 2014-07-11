@@ -206,7 +206,8 @@ most(all?) com.manigfeald.raft* namespaces"
   "create an empty thing that satisfies the RaftLog protocol"
   []
   #_{}
-  (com.manigfeald.raft.log.LogChecker. () {}))
+  #_(com.manigfeald.raft.log.LogChecker. () {})
+  ())
 
 (defn reject-append-entries [state leader-id current-term id]
   (-> state
