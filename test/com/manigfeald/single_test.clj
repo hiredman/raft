@@ -3,7 +3,8 @@
             [com.manigfeald.raft :refer :all]
             [clojure.test.check :as tc]
             [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as prop]))
+            [clojure.test.check.properties :as prop]
+            [clojure.test.check.clojure-test :refer [defspec]]))
 
 (defn n-rafts [n delays]
   (for [i (range n)]
@@ -76,6 +77,10 @@
                        :when (= :leader node-type)]
                    current-term)))]
       n))))
+
+(defspec zero-or-one-leader-per-term-spec
+  10000
+  zero-or-one-leader-per-term)
 
 (comment
 
