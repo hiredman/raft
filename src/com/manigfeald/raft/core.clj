@@ -1,7 +1,9 @@
 (ns com.manigfeald.raft.core
   "clojure.core contains lots of functions used in most(all?) clojure
 namespaces, com.manigfeald.raft.core contains functions used in
-most(all?) com.manigfeald.raft* namespaces"
+most(all?) com.manigfeald.raft* namespaces.
+
+com.manigfeald.raft.rules may be more interesting to you"
   (:require [com.manigfeald.raft.log :as log])
   (:import (clojure.lang PersistentQueue)))
 
