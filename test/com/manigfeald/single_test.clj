@@ -89,3 +89,36 @@
 
 
   )
+
+(defmacro foo [exp & body]
+  (when-not (eval exp)
+    `(do ~@body)))
+
+(foo (resolve 'clojure.test/original-test-var)
+     (in-ns 'clojure.test)
+
+     (def original-test-var test-var)
+
+     (defn test-var [v]
+       (clojure.tools.logging/trace "testing" v)
+       (let [start (System/currentTimeMillis)
+             result (original-test-var v)]
+         (clojure.tools.logging/trace
+          "testing" v "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
+
+     (def original-test-ns test-ns)
+
+     (defn test-ns [ns]
+       (clojure.tools.logging/trace "testing namespace" ns)
+       (let [start (System/currentTimeMillis)
+             result (original-test-ns ns)]
+         (clojure.tools.logging/trace
+          "testing namespace" ns "took"
+          (/ (- (System/currentTimeMillis) start) 1000.0)
+          "seconds")
+         result))
+
+     (in-ns 'com.manigfeald.raft-test))
