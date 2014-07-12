@@ -34,28 +34,6 @@
   (doseq [i nodes]
     (future-cancel (:future i))))
 
-;; (deftest test-kill-node
-;;   (dotimes [i 8]
-;;     (let [n (inc (* (inc i) 2))
-;;           leader (chan (dropping-buffer 10))
-;;           [leaders nodes] (f n leader)]
-;;       (try
-;;         (testing "elect leader"
-;;           (is (stable-leader? nodes n)))
-;;         (dotimes [ii (Math/floor (/ n 2))]
-;;           (testing "kill leader and elect a new one"
-;;             (let [[leader'] (leaders-of nodes 1)]
-;;               (doseq [node nodes
-;;                       :when (= leader' (:id node))]
-;;                 (future-cancel (:future node)))
-;;               (is (stable-leader?
-;;                    (for [node nodes
-;;                          :when (not (future-done? (:future node)))]
-;;                      node)
-;;                    (- n (inc ii)))))))
-;;         (finally
-;;           (shut-it-down! nodes))))))
-
 (defn raft-obj [in id cluster]
   (let [s (atom nil)
         lock (java.util.concurrent.Semaphore. 1)
@@ -136,8 +114,6 @@
                   leader)
            f (frequencies lead)
            [lead c] (last (sort-by second f))]
-       #_(log/trace "stable-leader?" n (into {} (for [[a b] f]
-                                                  [(-> a :raft deref :id) b])))
        (if (and lead
                 (>= c n))
          lead

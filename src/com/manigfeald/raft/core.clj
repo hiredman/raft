@@ -48,6 +48,8 @@ most(all?) com.manigfeald.raft* namespaces"
           op (log-entry-of raft-state new-last)]
       (assert op "op is in the log")
       (case (:operation-type op)
+        :noop (advance-applied-to-commit
+               (assoc (set-return-value raft-state (:index op) nil) :last-applied new-last))
         :add-node (advance-applied-to-commit
                    (-> raft-state
                        (assoc :last-applied new-last)

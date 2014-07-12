@@ -288,8 +288,10 @@ form that the value will be bound to in both the head and the body."
                     (into {} (for [node node-set]
                                [node (inc (last-log-index raft-state))]))})
         (assoc-in [:timer :next-timeout] (+ now period))
-        ;; TODO: this is a departure from strict raft
-        #_(update-in [:raft-state] rewrite-terms commit-index current-term)
+        (update-in [:raft-state] add-to-log
+                   {:term current-term
+                    :payload nil
+                    :operation-type :noop})
         (publish (broadcast node-set
                             {:type :append-entries
                              :term current-term
@@ -391,11 +393,8 @@ form that the value will be bound to in both the head and the body."
         (= message-type :operation))
    (-> state
        (log-trace "received command serial" (:serial message))
-       ;; (log-trace (:raft-leader-state state))
-       ;; (log-trace "commit-index" commit-index)
        (consume-message)
-       (update-in [:raft-state] add-to-log (assoc message
-                                             :term current-term))
+       (update-in [:raft-state] add-to-log (assoc (dissoc message :type) :term current-term))
        (as-> state
              (assoc-in state [:raft-leader-state :match-index id]
                        (last-log-index (:raft-state state)))))
