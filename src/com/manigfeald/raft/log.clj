@@ -179,3 +179,6 @@
              "satisfies RaftLog, takes two things that satisfy RaftLog
              and runs all operations against both, checking one
              against the other")
+
+;; document log entry format
+(defrecord LogEntry [return index term payload operation-type serial])
