@@ -26,7 +26,9 @@
 (alter-meta! #'->ImplementationState assoc :no-doc true)
 
 (defn raft
-  "return an init state when given a node id and a node-set"
+  "return an init state when given a node id and a node-set, id is the
+  id of the node this state represents, node-set is a set of the ids
+  of other nodes in the cluster"
   [id node-set timer]
   (->ImplementationState
    (->IO nil PersistentQueue/EMPTY)
