@@ -35,6 +35,15 @@ without the instinctive gag reflex of wiring in to a spreadsheet.
 
 ## Usage
 
+call `com.manigfeald.raft/raft` to get an initial state, call
+`com.manigfeald.raft/run-one` to advance the state. if you want the
+node you are modeling to receive a message, assoc the message in to
+`[:io :message]` in the state, `[:io :out-queue]` will contain messages
+the node you are modeling wants to send out. Update the value of
+`[:timer :now]` to model the passage of time.
+
+the tests have an example using core.async channels as the transport
+
 ## Generated Docs
 
 http://ce2144dc-f7c9-4f54-8fb6-7321a4c318db.s3.amazonaws.com/raft/index.html
@@ -42,6 +51,17 @@ http://ce2144dc-f7c9-4f54-8fb6-7321a4c318db.s3.amazonaws.com/raft/index.html
 ## See also
 
 https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf
+
+## What is missing
+
+The raft paper also has snapshot generation to avoid logs growing too
+large and an interesting scheme for changing cluster membership, both
+of which are unimplemented.
+
+The raft paper also talks about providing a fast path for reads that
+avoids the entire log and commit process, I have left that out over
+fears of screwing it up, so reads and writes both go through the
+entire consensus process
 
 ## License
 
