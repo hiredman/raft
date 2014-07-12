@@ -4,7 +4,8 @@
             [com.manigfeald.raft.rules :refer [rules-of-raft]])
   (:import (clojure.lang PersistentQueue)))
 
-;; TODO: knossos
+;; TODO: why do the tests still need with-pings with leaders sending noops?
+;; TODO: document message formats
 ;; defrecords mainly just to document the expected fields
 (defrecord RaftLeaderState [next-index match-index])
 (defrecord RaftState [current-term voted-for log commit-index last-applied

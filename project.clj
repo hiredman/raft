@@ -11,4 +11,6 @@
                                   [ch.qos.logback/logback-classic "1.0.9"]
                                   [ch.qos.logback/logback-core "1.0.9"]
                                   [org.slf4j/jcl-over-slf4j "1.7.2"]
-                                  [org.clojure/test.check "0.5.8"]]}})
+                                  [org.clojure/test.check "0.5.8"]
+                                  [knossos "0.2"
+                                   :exclusions [org.slf4j/slf4j-log4j12]]]}})
