@@ -1,4 +1,4 @@
-(defproject com.manigfeald/raft "0.1.0"
+(defproject com.manigfeald/raft "0.2.0-SNAPSHOT"
   :description "abstract raft algorithm written in clojure"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
