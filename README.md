@@ -35,6 +35,8 @@ without the instinctive gag reflex of wiring in to a spreadsheet.
 
 ## Usage
 
+`[com.manigfeald/raft 0.1.0]`
+
 call `com.manigfeald.raft/raft` to get an initial state, call
 `com.manigfeald.raft/run-one` to advance the state. if you want the
 node you are modeling to receive a message, assoc the message in to
