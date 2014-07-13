@@ -69,9 +69,9 @@
            :when (= serial needle-serial)]
        entry)))
   (delete-from [log index]
-    (for [item log
-          :when (not (>= (:index item) index))]
-      item)))
+    (doall (for [item log
+                 :when (not (>= (:index item) index))]
+             item))))
 
 (extend-type clojure.lang.IPersistentMap
   Counted
