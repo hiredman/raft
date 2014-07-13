@@ -218,13 +218,19 @@
                     (while (not @stop?)
                       (let [k (rand-nth keys)]
                         (if (zero? (rand-int 2))
-                          (let [_ (swap! history conj (kop/invoke client-id :read [k nil]))
-                                r (raft-read nodes k)]
-                            (swap! history conj (kop/ok client-id :read [k r])))
+                          (try
+                            (swap! history conj (kop/invoke client-id :read [k nil]))
+                            (let [r (raft-read nodes k)]
+                              (swap! history conj (kop/ok client-id :read [k r])))
+                            (catch Exception _
+                              (swap! history conj (kop/fail client-id :read [k nil]))))
                           (let [v (gensym)
-                                _ (swap! history conj (kop/invoke client-id :write [k v]))
-                                r (raft-write nodes k v)]
-                            (swap! history conj (kop/ok client-id :write [k v]))))))))
+                                _ (swap! history conj (kop/invoke client-id :write [k v]))]
+                            (try
+                              (raft-write nodes k v)
+                              (swap! history conj (kop/ok client-id :write [k v]))
+                              (catch Exception _
+                                (swap! history conj (kop/fail client-id :write [k v]))))))))))
         killer (future
                  (while (not @stop?)
                    (let [n (rand-nth nodes)]
@@ -234,7 +240,7 @@
                        (finally
                          (.release (:lock n)))))))]
     (doall clients)
-    (Thread/sleep 60000)
+    (Thread/sleep (* 1000 (inc (rand-int 60))))
     (reset! stop? true)
     (doseq [f clients]
       (deref f))
